@@ -149,7 +149,7 @@ def main():
     indicators_map = {}
 
     # رسالة تأكيد يومية الساعة 10 صباحاً بتوقيت الأردن/فلسطين (UTC+3) = 7 صباحاً UTC
-    if True :
+    if hour == 22:
         send_telegram("✅ البوت شغال - بدأ فحص جديد لليوم")
 
     for pair in PAIRS:
