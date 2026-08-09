@@ -2,14 +2,17 @@ import os
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime, timezone
 
 # ==== المفاتيح (من GitHub Secrets) ====
 TWELVE_DATA_KEY = os.environ["TWELVE_DATA_KEY"]
 GEMINI_KEY = os.environ["GEMINI_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+ALPHA_VANTAGE_KEY = os.environ["ALPHA_VANTAGE_KEY"]
 
-PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD"]
+PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
+         "NZD/USD", "GBP/JPY", "EUR/JPY", "EUR/GBP"]
 
 def get_forex_data(pair):
     url = "https://api.twelvedata.com/time_series"
@@ -73,18 +76,43 @@ def compute_indicators(df):
         "resistance": round(resistance, 5)
     }
 
-def ask_gemini(all_data):
-    prompt = f"""أنت محلل فني للفوركس. لديك بيانات {len(all_data)} أزواج عملات على فريم 4 ساعات.
+def get_forex_news():
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "NEWS_SENTIMENT",
+        "topics": "economy_macro,finance",
+        "limit": 15,
+        "apikey": ALPHA_VANTAGE_KEY
+    }
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        data = r.json()
+        articles = data.get("feed", [])
+        headlines = []
+        for a in articles[:10]:
+            title = a.get("title", "")
+            summary = a.get("summary", "")[:150]
+            headlines.append(f"- {title}: {summary}")
+        return "\n".join(headlines) if headlines else "لا توجد أخبار متاحة حالياً"
+    except Exception:
+        return "لا توجد أخبار متاحة حالياً"
 
-قواعد الإشارة القوية (لازم الثلاثة يتوافقوا معاً):
+def ask_gemini(all_data, news_text):
+    prompt = f"""أنت محلل فني وإخباري للفوركس. لديك بيانات {len(all_data)} أزواج عملات على فريم 4 ساعات، بالإضافة لأهم الأخبار الاقتصادية الحالية.
+
+قواعد الإشارة القوية (الشروط الفنية الثلاثة لازم تتوافق معاً، والأخبار تُستخدم كتأكيد أو تحذير إضافي):
 1. الاتجاه: EMA50 فوق EMA200 = صاعد قوي، أو EMA50 تحت EMA200 = هابط قوي
 2. الزخم: RSI بين 40-60 يدعم استمرار الاتجاه (مش متطرف)
 3. قوة الترند: ADX أعلى من 25
+4. الأخبار: إذا وجدت أخبار مهمة تدعم أو تتعارض بشكل واضح مع اتجاه زوج معين، اعتبر ذلك عامل تأكيد إضافي. إذا كانت الأخبار تحذر من تقلب عالٍ متوقع قريباً لعملة معينة، لا تصدر إشارة على الأزواج المرتبطة بها حتى لو الشروط الفنية متوفرة.
 
-البيانات:
+البيانات الفنية:
 {all_data}
 
-أعطني فقط الأزواج التي تحقق الشروط الثلاثة معاً بدقة. اكتب الرد بهذا الشكل بالضبط لكل زوج مستوفي (وإن لم يوجد أي زوج مستوفٍ، اكتب فقط: NONE):
+أهم الأخبار الاقتصادية الحالية:
+{news_text}
+
+أعطني فقط الأزواج التي تحقق الشروط الفنية الثلاثة معاً بدقة، والأخبار لا تتعارض معها بشكل خطير. اكتب الرد بهذا الشكل بالضبط لكل زوج مستوفي (وإن لم يوجد أي زوج مستوفٍ، اكتب فقط: NONE):
 
 PAIR: [اسم الزوج]
 DIRECTION: [صاعد/هابط]
@@ -106,6 +134,10 @@ def main():
     all_data = {}
     indicators_map = {}
 
+    current_hour = datetime.now(timezone.utc).hour
+    if current_hour == 0:
+        send_telegram("✅ البوت شغال - بدأ فحص جديد لليوم")
+
     for pair in PAIRS:
         df = get_forex_data(pair)
         if df is None or len(df) < 200:
@@ -117,7 +149,8 @@ def main():
     if not all_data:
         return
 
-    analysis = ask_gemini(all_data)
+    news_text = get_forex_news()
+    analysis = ask_gemini(all_data, news_text)
 
     if "NONE" in analysis or "PAIR:" not in analysis:
         print("لا توجد إشارات قوية اليوم")
