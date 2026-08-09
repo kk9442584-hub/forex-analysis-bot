@@ -1,4 +1,4 @@
-import os
+        import os
 import requests
 import pandas as pd
 import numpy as np
@@ -131,11 +131,25 @@ def send_telegram(message):
     requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
 
 def main():
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # الاثنين=0 ... الجمعة=4, السبت=5, الأحد=6
+    hour = now.hour
+
+    # تخطي الفحص وقت إغلاق السوق (جمعة 21:00 UTC - أحد 22:00 UTC)
+    market_closed = (
+        (weekday == 4 and hour >= 21) or
+        (weekday == 5) or
+        (weekday == 6 and hour < 22)
+    )
+    if market_closed:
+        print("السوق مقفول - تخطي الفحص")
+        return
+
     all_data = {}
     indicators_map = {}
 
-    current_hour = datetime.now(timezone.utc).hour
-    if current_hour == 0:
+    # رسالة تأكيد يومية الساعة 10 صباحاً بتوقيت الأردن/فلسطين (UTC+3) = 7 صباحاً UTC
+    if hour == 7:
         send_telegram("✅ البوت شغال - بدأ فحص جديد لليوم")
 
     for pair in PAIRS:
@@ -177,3 +191,4 @@ ATR: {ind['atr']}
 
 if __name__ == "__main__":
     main()
+         
