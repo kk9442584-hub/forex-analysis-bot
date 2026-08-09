@@ -1,7 +1,12 @@
 import os
+import io
+import base64
 import requests
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 
 # ==== المفاتيح (من GitHub Secrets) ====
@@ -14,12 +19,13 @@ ALPHA_VANTAGE_KEY = os.environ["ALPHA_VANTAGE_KEY"]
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
          "NZD/USD", "GBP/JPY", "EUR/JPY", "EUR/GBP"]
 
+
 def get_forex_data(pair):
     url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": pair,
         "interval": "4h",
-        "outputsize": 210,
+        "outputsize": 310,
         "apikey": TWELVE_DATA_KEY
     }
     r = requests.get(url, params=params, timeout=30)
@@ -32,6 +38,31 @@ def get_forex_data(pair):
     df["low"] = df["low"].astype(float)
     df = df.iloc[::-1].reset_index(drop=True)
     return df
+
+
+def find_nearest_levels(df, window=5):
+    """يلاقي أقرب دعم ومقاومة حقيقيين (نقاط ارتداد سابقة فعلية)"""
+    highs = df["high"]
+    lows = df["low"]
+    price = df["close"].iloc[-1]
+
+    swing_highs = []
+    swing_lows = []
+    for i in range(window, len(df) - window):
+        window_high = highs.iloc[i - window:i + window + 1]
+        window_low = lows.iloc[i - window:i + window + 1]
+        if highs.iloc[i] == window_high.max():
+            swing_highs.append(highs.iloc[i])
+        if lows.iloc[i] == window_low.min():
+            swing_lows.append(lows.iloc[i])
+
+    resistances_above = [h for h in swing_highs if h > price]
+    supports_below = [l for l in swing_lows if l < price]
+
+    resistance = min(resistances_above) if resistances_above else highs.max()
+    support = max(supports_below) if supports_below else lows.min()
+    return support, resistance
+
 
 def compute_indicators(df):
     close = df["close"]
@@ -61,9 +92,16 @@ def compute_indicators(df):
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.rolling(14).mean().iloc[-1]
 
-    support = low.tail(20).min()
-    resistance = high.tail(20).max()
     price = close.iloc[-1]
+
+    # الدعم والمقاومة الحاليان (لعرضهما بالرسالة)
+    support, resistance = find_nearest_levels(df)
+
+    # الدعم والمقاومة "السابقان" (بدون آخر شمعة) للتأكد من الاختراق الفعلي
+    support_prev, resistance_prev = find_nearest_levels(df.iloc[:-1])
+
+    bullish_breakout = price > resistance_prev
+    bearish_breakout = price < support_prev
 
     return {
         "price": round(price, 5),
@@ -73,8 +111,43 @@ def compute_indicators(df):
         "adx": round(adx, 2),
         "atr": round(atr, 5),
         "support": round(support, 5),
-        "resistance": round(resistance, 5)
+        "resistance": round(resistance, 5),
+        "bullish_breakout": bool(bullish_breakout),
+        "bearish_breakout": bool(bearish_breakout),
+        "trend_up": ema50 > ema200,
+        "trend_down": ema50 < ema200,
+        "rsi_ok": 40 <= rsi <= 60,
+        "adx_ok": adx > 25,
     }
+
+
+def passes_conditions(ind):
+    """فحص أولي حتمي (بدون AI): هل توفرت الشروط الفنية + اختراق فعلي؟"""
+    if not (ind["rsi_ok"] and ind["adx_ok"]):
+        return None
+    if ind["trend_up"] and ind["bullish_breakout"]:
+        return "صاعد"
+    if ind["trend_down"] and ind["bearish_breakout"]:
+        return "هابط"
+    return None
+
+
+def generate_chart(df, pair, support, resistance):
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
+    ax.plot(df["close"].tail(120).values, color="#2196F3", linewidth=1.3, label="السعر")
+    ax.axhline(support, color="#4CAF50", linestyle="--", linewidth=1, label="دعم")
+    ax.axhline(resistance, color="#F44336", linestyle="--", linewidth=1, label="مقاومة")
+    ax.set_title(pair)
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(alpha=0.2)
+
+    buf = io.BytesIO()
+    plt.tight_layout()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
 
 def get_forex_news():
     url = "https://www.alphavantage.co/query"
@@ -97,45 +170,60 @@ def get_forex_news():
     except Exception:
         return "لا توجد أخبار متاحة حالياً"
 
-def ask_gemini(all_data, news_text):
-    prompt = f"""أنت محلل فني وإخباري للفوركس. لديك بيانات {len(all_data)} أزواج عملات على فريم 4 ساعات، بالإضافة لأهم الأخبار الاقتصادية الحالية.
 
-قواعد الإشارة القوية (الشروط الفنية الثلاثة لازم تتوافق معاً، والأخبار تُستخدم كتأكيد أو تحذير إضافي):
-1. الاتجاه: EMA50 فوق EMA200 = صاعد قوي، أو EMA50 تحت EMA200 = هابط قوي
-2. الزخم: RSI بين 40-60 يدعم استمرار الاتجاه (مش متطرف)
-3. قوة الترند: ADX أعلى من 25
-4. الأخبار: إذا وجدت أخبار مهمة تدعم أو تتعارض بشكل واضح مع اتجاه زوج معين، اعتبر ذلك عامل تأكيد إضافي. إذا كانت الأخبار تحذر من تقلب عالٍ متوقع قريباً لعملة معينة، لا تصدر إشارة على الأزواج المرتبطة بها حتى لو الشروط الفنية متوفرة.
+def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
+    prompt = f"""أنت محلل فني وإخباري محترف للفوركس. زوج {pair} حقق للتو اختراقاً فعلياً
+لمستوى فني مهم، والمؤشرات تدعم اتجاه {direction}.
 
-البيانات الفنية:
-{all_data}
+المعطيات الفنية:
+- السعر الحالي: {ind['price']}
+- الدعم: {ind['support']}
+- المقاومة: {ind['resistance']}
+- RSI: {ind['rsi']}
+- ADX: {ind['adx']}
 
 أهم الأخبار الاقتصادية الحالية:
 {news_text}
 
-أعطني فقط الأزواج التي تحقق الشروط الفنية الثلاثة معاً بدقة، والأخبار لا تتعارض معها بشكل خطير. اكتب الرد بهذا الشكل بالضبط لكل زوج مستوفي (وإن لم يوجد أي زوج مستوفٍ، اكتب فقط: NONE):
+معك أيضاً صورة الشارت الفعلية لآخر فترة تداول.
 
-PAIR: [اسم الزوج]
-DIRECTION: [صاعد/هابط]
+المطلوب:
+1. اكتب فقرة قصيرة (3-4 أسطر) بالعربية تصف الوضع الحالي للزوج بأسلوب واضح ومفيد،
+   بالاستفادة من الشكل البصري للشارت (هل هناك نمط واضح مثل مثلث أو قناة؟) والأخبار.
+2. إذا كان هناك سيناريو فني منطقي مبني على مبدأ تحليل فني معروف (وليس تنبؤاً قطعياً)
+   يتعلق بمستوى قريب آخر، اكتبه في فقرة منفصلة تبدأ بالضبط بكلمة "⚠️ تنبؤ:".
+   إذا لم يوجد سيناريو واضح، لا تكتب هذا الجزء إطلاقاً.
+3. إذا وجدت الأخبار تتعارض بشكل خطير مع هذا الاتجاه، اكتب فقط: SKIP
+
+لا تستخدم أي مقدمات، ابدأ مباشرة بالنص المطلوب.
 """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/png", "data": chart_b64}}
+            ]
+        }]
+    }
     r = requests.post(url, json=body, timeout=60)
     result = r.json()
     try:
-        return result["candidates"][0]["content"]["parts"][0]["text"]
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
     except (KeyError, IndexError):
-        return "NONE"
+        return "SKIP"
+
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
 
+
 def main():
     now = datetime.now(timezone.utc)
-    weekday = now.weekday()  # الاثنين=0 ... الجمعة=4, السبت=5, الأحد=6
+    weekday = now.weekday()
     hour = now.hour
 
-    # تخطي الفحص وقت إغلاق السوق (جمعة 21:00 UTC - أحد 22:00 UTC)
     market_closed = (
         (weekday == 4 and hour >= 21) or
         (weekday == 5) or
@@ -145,50 +233,49 @@ def main():
         print("السوق مقفول - تخطي الفحص")
         return
 
-    all_data = {}
-    indicators_map = {}
-
-    # رسالة تأكيد يومية الساعة 10 صباحاً بتوقيت الأردن/فلسطين (UTC+3) = 7 صباحاً UTC
+    # رسالة تأكيد يومية عند لحظة فتح السوق (1:00 فجراً بتوقيت الأردن)
     if hour == 22:
         send_telegram("✅ البوت شغال - بدأ فحص جديد لليوم")
 
+    news_text = None
+
     for pair in PAIRS:
         df = get_forex_data(pair)
-        if df is None or len(df) < 200:
+        if df is None or len(df) < 300:
             continue
+
         ind = compute_indicators(df)
-        indicators_map[pair] = ind
-        all_data[pair] = ind
+        direction = passes_conditions(ind)
+        if direction is None:
+            continue
 
-    if not all_data:
-        return
+        # وصلنا هنا فقط لو في اختراق فعلي + شروط فنية متوافقة
+        if news_text is None:
+            news_text = get_forex_news()
 
-    news_text = get_forex_news()
-    analysis = ask_gemini(all_data, news_text)
+        chart_b64 = generate_chart(df, pair, ind["support"], ind["resistance"])
+        analysis = ask_gemini_vision(pair, direction, ind, news_text, chart_b64)
 
-    if "NONE" in analysis or "PAIR:" not in analysis:
-        print("لا توجد إشارات قوية اليوم")
-        return
+        if "SKIP" in analysis:
+            print(f"{pair}: تم تجاوزها بسبب تعارض الأخبار")
+            continue
 
-    blocks = analysis.split("PAIR:")
-    for block in blocks[1:]:
-        lines = block.strip().split("\n")
-        pair_name = lines[0].strip()
-        direction = lines[1].replace("DIRECTION:", "").strip() if len(lines) > 1 else ""
+        emoji = "🟢" if direction == "صاعد" else "🔴"
+        msg = f"""{emoji} إشارة قوية - {pair} ({direction})
 
-        if pair_name in indicators_map:
-            ind = indicators_map[pair_name]
-            emoji = "🟢" if "صاعد" in direction else "🔴"
-            msg = f"""{emoji} إشارة قوية - {pair_name} ({direction})
+{analysis}
 
 السعر وقت التنبيه: {ind['price']}
 ATR: {ind['atr']}
-
 أقرب دعم: {ind['support']}
 أقرب مقاومة: {ind['resistance']}"""
-            send_telegram(msg)
-            print(f"تم إرسال إشارة: {pair_name}")
+
+        send_telegram(msg)
+        print(f"تم إرسال إشارة: {pair}")
+
+    if news_text is None:
+        print("لا توجد إشارات قوية اليوم")
+
 
 if __name__ == "__main__":
     main()
-         
