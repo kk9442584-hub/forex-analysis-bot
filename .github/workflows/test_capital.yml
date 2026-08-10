@@ -1,3 +1,4 @@
+
 name: Test Capital.com API
 
 on:
@@ -7,7 +8,7 @@ jobs:
   test-connection:
     runs-on: ubuntu-latest
     steps:
-      - name: Test Capital.com login
+      - name: Find epics for pairs
         env:
           CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
           CAPITAL_API_PASSWORD: ${{ secrets.CAPITAL_API_PASSWORD }}
@@ -17,24 +18,37 @@ jobs:
           python3 << 'EOF'
           import requests, os
 
-          url = "https://demo-api-capital.backend-capital.com/api/v1/session"
-          headers = {
-              "X-CAP-API-KEY": os.environ["CAPITAL_API_KEY"],
-              "Content-Type": "application/json"
-          }
-          payload = {
+          BASE = "https://demo-api-capital.backend-capital.com/api/v1"
+
+          # تسجيل الدخول
+          r = requests.post(f"{BASE}/session", json={
               "identifier": os.environ["CAPITAL_IDENTIFIER"],
               "password": os.environ["CAPITAL_API_PASSWORD"]
+          }, headers={
+              "X-CAP-API-KEY": os.environ["CAPITAL_API_KEY"],
+              "Content-Type": "application/json"
+          })
+
+          cst = r.headers.get("CST")
+          sec = r.headers.get("X-SECURITY-TOKEN")
+          print("Login status:", r.status_code)
+
+          headers = {
+              "X-CAP-API-KEY": os.environ["CAPITAL_API_KEY"],
+              "CST": cst,
+              "X-SECURITY-TOKEN": sec
           }
 
-          r = requests.post(url, json=payload, headers=headers)
-          print("Status code:", r.status_code)
-          print("Response:", r.text)
+          pairs = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
+                    "USDCAD", "NZDUSD", "GBPJPY", "EURJPY", "EURGBP"]
 
-          if r.status_code == 200:
-              print("✅ الاتصال نجح!")
-              print("CST token:", r.headers.get("CST"))
-              print("Security token:", r.headers.get("X-SECURITY-TOKEN"))
-          else:
-              print("❌ فشل الاتصال")
+          for p in pairs:
+              res = requests.get(f"{BASE}/markets", params={"searchTerm": p}, headers=headers)
+              data = res.json()
+              markets = data.get("markets", [])
+              if markets:
+                  m = markets[0]
+                  print(f"{p} -> epic: {m.get('epic')} | name: {m.get('instrumentName')}")
+              else:
+                  print(f"{p} -> ما لقيت نتيجة")
           EOF
