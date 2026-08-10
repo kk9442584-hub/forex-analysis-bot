@@ -129,12 +129,10 @@ def compute_indicators(df):
 
 
 def passes_conditions(ind):
-    """فحص أولي حتمي (بدون AI): هل توفرت الشروط الفنية + اختراق فعلي؟"""
-    if not ind["adx_ok"]:
-        return None
-    if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > 55:
+    """وضع اختبار مؤقت - شروط مخففة"""
+    if ind["trend_up"]:
         return "صاعد"
-    if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < 45:
+    if ind["trend_down"]:
         return "هابط"
     return None
 
