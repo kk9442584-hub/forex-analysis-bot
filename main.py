@@ -124,18 +124,17 @@ def compute_indicators(df):
         "bearish_breakout": bool(bearish_breakout),
         "trend_up": ema50 > ema200,
         "trend_down": ema50 < ema200,
-        "rsi_ok": 40 <= rsi <= 60,
         "adx_ok": adx > 25,
     }
 
 
 def passes_conditions(ind):
     """فحص أولي حتمي (بدون AI): هل توفرت الشروط الفنية + اختراق فعلي؟"""
-    if not (ind["rsi_ok"] and ind["adx_ok"]):
+    if not ind["adx_ok"]:
         return None
-    if ind["trend_up"] and ind["bullish_breakout"]:
+    if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > 55:
         return "صاعد"
-    if ind["trend_down"] and ind["bearish_breakout"]:
+    if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < 45:
         return "هابط"
     return None
 
