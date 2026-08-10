@@ -15,6 +15,14 @@ GEMINI_KEY = os.environ["GEMINI_KEY"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 ALPHA_VANTAGE_KEY = os.environ["ALPHA_VANTAGE_KEY"]
+CAPITAL_API_KEY = os.environ.get("CAPITAL_API_KEY")
+CAPITAL_API_PASSWORD = os.environ.get("CAPITAL_API_PASSWORD")
+CAPITAL_IDENTIFIER = os.environ.get("CAPITAL_IDENTIFIER")
+CAPITAL_BASE = "https://demo-api-capital.backend-capital.com/api/v1"
+
+RISK_PERCENT = 0.01
+RR_RATIO = 2
+ATR_MULTIPLIER = 1.5
 
 PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
          "NZD/USD", "GBP/JPY", "EUR/JPY", "EUR/GBP"]
@@ -219,6 +227,68 @@ def send_telegram(message):
     requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
 
 
+def capital_login():
+    r = requests.post(f"{CAPITAL_BASE}/session", json={
+        "identifier": CAPITAL_IDENTIFIER,
+        "password": CAPITAL_API_PASSWORD
+    }, headers={
+        "X-CAP-API-KEY": CAPITAL_API_KEY,
+        "Content-Type": "application/json"
+    })
+    if r.status_code != 200:
+        print("فشل تسجيل الدخول لـ Capital.com:", r.text)
+        return None
+    return {
+        "X-CAP-API-KEY": CAPITAL_API_KEY,
+        "CST": r.headers.get("CST"),
+        "X-SECURITY-TOKEN": r.headers.get("X-SECURITY-TOKEN"),
+        "Content-Type": "application/json"
+    }
+
+
+def get_balance(headers):
+    r = requests.get(f"{CAPITAL_BASE}/accounts", headers=headers)
+    data = r.json()
+    try:
+        return data["accounts"][0]["balance"]["balance"]
+    except (KeyError, IndexError):
+        return None
+
+
+def open_trade(pair, direction, ind):
+    headers = capital_login()
+    if headers is None:
+        return
+
+    balance = get_balance(headers)
+    if balance is None:
+        print("ما قدرت أجيب رصيد الحساب")
+        return
+
+    epic = pair.replace("/", "")
+    atr = ind["atr"]
+    stop_distance = round(atr * ATR_MULTIPLIER, 5)
+    profit_distance = round(stop_distance * RR_RATIO, 5)
+
+    risk_amount = balance * RISK_PERCENT
+    size = round(risk_amount / (stop_distance * 10000), 2)
+    size = max(size, 0.01)
+
+    deal_direction = "BUY" if direction == "صاعد" else "SELL"
+
+    payload = {
+        "epic": epic,
+        "direction": deal_direction,
+        "size": size,
+        "stopDistance": round(stop_distance * 10000, 1),
+        "profitDistance": round(profit_distance * 10000, 1)
+    }
+
+    r = requests.post(f"{CAPITAL_BASE}/positions", json=payload, headers=headers)
+    print(f"فتح صفقة {pair} ({deal_direction}) - status: {r.status_code}")
+    print(r.text)
+
+
 def main():
     now = datetime.now(timezone.utc)
     weekday = now.weekday()
@@ -272,6 +342,7 @@ ATR: {ind['atr']}
 
         send_telegram(msg)
         print(f"تم إرسال إشارة: {pair}")
+        open_trade(pair, direction, ind)
 
     if news_text is None:
         print("لا توجد إشارات قوية اليوم")
