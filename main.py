@@ -32,7 +32,7 @@ def get_forex_data(pair):
     url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": pair,
-        "interval": "4h",
+        "interval": "15min",
         "outputsize": 310,
         "apikey": TWELVE_DATA_KEY
     }
