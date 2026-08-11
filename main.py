@@ -325,6 +325,9 @@ def main():
 
         if "SKIP" in analysis:
             print(f"{pair}: تم تجاوزها بسبب تعارض الأخبار")
+            print(f"--- رد Gemini الكامل لـ {pair} ---")
+            print(analysis)
+            print("--- نهاية الرد ---")
             continue
 
         emoji = "🟢" if direction == "صاعد" else "🔴"
