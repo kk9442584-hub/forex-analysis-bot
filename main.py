@@ -28,24 +28,29 @@ PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
          "NZD/USD", "GBP/JPY", "EUR/JPY", "EUR/GBP"]
 
 
-def get_forex_data(pair):
+def get_forex_data_batch(pairs):
     url = "https://api.twelvedata.com/time_series"
     params = {
-        "symbol": pair,
+        "symbol": ",".join(pairs),
         "interval": "15min",
         "outputsize": 310,
         "apikey": TWELVE_DATA_KEY
     }
     r = requests.get(url, params=params, timeout=30)
     data = r.json()
-    if "values" not in data:
-        return None
-    df = pd.DataFrame(data["values"])
-    df["close"] = df["close"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df = df.iloc[::-1].reset_index(drop=True)
-    return df
+    result = {}
+    for pair in pairs:
+        pair_data = data.get(pair)
+        if not pair_data or "values" not in pair_data:
+            result[pair] = None
+            continue
+        df = pd.DataFrame(pair_data["values"])
+        df["close"] = df["close"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df = df.iloc[::-1].reset_index(drop=True)
+        result[pair] = df
+    return result
 
 
 def find_nearest_levels(df, window=5):
