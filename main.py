@@ -313,8 +313,10 @@ def main():
 
     news_text = None
 
+    all_pairs_data = get_forex_data_batch(PAIRS)
+
     for pair in PAIRS:
-        df = get_forex_data(pair)
+        df = all_pairs_data.get(pair)
         if df is None or len(df) < 300:
             continue
 
