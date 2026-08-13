@@ -315,6 +315,7 @@ def main():
 
         ind = compute_indicators(df)
         direction = passes_conditions(ind)
+        print(f"{pair} | RSI: {ind['rsi']} | ADX: {ind['adx']} | trend_up: {ind['trend_up']} | trend_down: {ind['trend_down']} | bullish_breakout: {ind['bullish_breakout']} | bearish_breakout: {ind['bearish_breakout']} | النتيجة: {direction}")
         if direction is None:
             continue
 
