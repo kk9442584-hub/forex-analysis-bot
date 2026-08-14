@@ -394,6 +394,16 @@ def main():
             print("--- نهاية الرد ---")
             continue
 
+        atr = ind["atr"]
+        stop_dist = round(atr * ATR_MULTIPLIER, 5)
+        profit_dist = round(stop_dist * RR_RATIO, 5)
+        if direction == "صاعد":
+            stop_price = round(ind["price"] - stop_dist, 5)
+            profit_price = round(ind["price"] + profit_dist, 5)
+        else:
+            stop_price = round(ind["price"] + stop_dist, 5)
+            profit_price = round(ind["price"] - profit_dist, 5)
+
         emoji = "🟢" if direction == "صاعد" else "🔴"
         msg = f"""{emoji} إشارة قوية - {pair} ({direction})
 
@@ -402,7 +412,9 @@ def main():
 السعر وقت التنبيه: {ind['price']}
 ATR: {ind['atr']}
 أقرب دعم: {ind['support']}
-أقرب مقاومة: {ind['resistance']}"""
+أقرب مقاومة: {ind['resistance']}
+ستوب لوز: {stop_price}
+تيك بروفت: {profit_price}"""
 
         send_telegram(msg)
         print(f"تم إرسال إشارة: {pair}")
@@ -414,4 +426,4 @@ ATR: {ind['atr']}
 
 if __name__ == "__main__":
     main()
-             
+         
