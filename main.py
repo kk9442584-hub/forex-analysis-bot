@@ -258,9 +258,19 @@ def get_balance(headers):
         return None
 
 
+def has_open_position(headers):
+    r = requests.get(f"{CAPITAL_BASE}/positions", headers=headers)
+    data = r.json()
+    positions = data.get("positions", [])
+    return len(positions) > 0
+
 def open_trade(pair, direction, ind):
     headers = capital_login()
     if headers is None:
+        return
+
+    if has_open_position(headers):
+        print(f"فيه صفقة مفتوحة بالفعل - تم تخطي {pair}")
         return
 
     balance = get_balance(headers)
