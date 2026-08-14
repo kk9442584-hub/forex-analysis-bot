@@ -217,11 +217,12 @@ def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
             ]
         }],
         "generationConfig": {
-            "response_mime_type": "application/json"
+            "response_mime_type": "application/json",
+            "thinking_config": {"thinking_budget": 0}
         }
     }
     try:
-        r = requests.post(url, json=body, timeout=60)
+        r = requests.post(url, json=body, timeout=120)
         result = r.json()
         raw_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
         print(f"--- رد Gemini الخام لـ {pair} ---")
