@@ -24,9 +24,8 @@ RISK_PERCENT = 0.01
 RR_RATIO = 2
 ATR_MULTIPLIER = 1.5
 
-PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD",
-         "NZD/USD", "GBP/JPY", "EUR/JPY", "EUR/GBP"]
-
+PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
+         "USD/CAD", "GBP/JPY", "EUR/JPY"]
 
 def get_forex_data_batch(pairs):
     url = "https://api.twelvedata.com/time_series"
