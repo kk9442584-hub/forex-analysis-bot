@@ -314,7 +314,7 @@ def open_trade(pair, direction, ind):
 
     risk_amount = balance * RISK_PERCENT
     size = round(risk_amount / (stop_distance * 10000), 2)
-    size = max(size, 0.1)
+    size = max(size, 100)
     deal_direction = "BUY" if direction == "صاعد" else "SELL"
 
     payload = {
