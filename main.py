@@ -328,13 +328,22 @@ def open_trade(pair, direction, ind):
 
     if r.status_code != 200:
         import re
-        match = re.search(r'maxvalue["\']?:?\s*([0-9]+\.?[0-9]*)', r.text)
-        if match:
-            max_allowed = float(match.group(1))
-            new_stop = round(max_allowed * 0.9, 1)
-            new_profit = round(new_stop * RR_RATIO, 1)
-            print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أصغر ({new_stop} نقطة)")
-            r2 = send_order(new_stop, new_profit)
+        if "maxvalue" in r.text:
+            match = re.search(r'maxvalue["\']?:?\s*([0-9]+\.?[0-9]*)', r.text)
+            if match and float(match.group(1)) > 0:
+                max_allowed = float(match.group(1))
+                new_stop = round(max_allowed * 0.9, 1)
+                new_profit = round(new_stop * RR_RATIO, 1)
+                print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أصغر ({new_stop} نقطة)")
+                r2 = send_order(new_stop, new_profit)
+                print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r2.status_code}")
+                print(r2.text)
+        elif "minvalue" in r.text:
+            # الرقم المعلن من الخادم غير موثوق أحياناً (يظهر 0)، فنستخدم نسبة آمنة من السعر
+            safe_stop = round(ind["price"] * 0.005 * 10000, 1)
+            safe_profit = round(safe_stop * RR_RATIO, 1)
+            print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أكبر ({safe_stop} نقطة)")
+            r2 = send_order(safe_stop, safe_profit)
             print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r2.status_code}")
             print(r2.text)
 
@@ -405,4 +414,4 @@ ATR: {ind['atr']}
 
 if __name__ == "__main__":
     main()
-                   
+             
