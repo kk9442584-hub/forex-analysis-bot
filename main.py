@@ -37,9 +37,6 @@ def get_forex_data_batch(pairs):
     }
     r = requests.get(url, params=params, timeout=30)
     data = r.json()
-    print("--- استجابة Twelve Data الخام ---")
-    print(str(data)[:2000])
-    print("--- نهاية الاستجابة ---")
     result = {}
     for pair in pairs:
         pair_data = data.get(pair)
