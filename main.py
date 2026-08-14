@@ -313,21 +313,7 @@ def open_trade(pair, direction, ind):
     profit_distance = round(stop_distance * RR_RATIO, 5)
 
     risk_amount = balance * RISK_PERCENT
-    size = round(risk_amount / (stop_distance * 10000), 2)
-    size = max(size, 100)
-    deal_direction = "BUY" if direction == "صاعد" else "SELL"
-
-    payload = {
-        "epic": epic,
-        "direction": deal_direction,
-        "size": size,
-        "stopDistance": round(stop_distance * 10000, 1),
-        "profitDistance": round(profit_distance * 10000, 1)
-    }
-
-    r = requests.post(f"{CAPITAL_BASE}/positions", json=payload, headers=headers)
-    print(f"فتح صفقة {pair} ({deal_direction}) - status: {r.status_code}")
-    print(r.text)
+    size = round(risk_amount / (stop_distance
 
 
 def main():
