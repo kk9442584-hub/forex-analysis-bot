@@ -183,8 +183,8 @@ def get_forex_news():
 
 
 def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
-    prompt = f"""أنت محلل فني وإخباري محترف للفوركس. زوج {pair} حقق للتو اختراقاً فعلياً
-لمستوى فني مهم، والمؤشرات تدعم اتجاه {direction}.
+    prompt = f"""أنت محلل فني وإخباري محترف للفوركس. زوج {pair} حقق اختراقاً فعلياً {direction}.
+المستوى فني مهم, والمؤشرات تدعم اتجاه {direction}.
 
 المعطيات الفنية:
 - السعر الحالي: {ind['price']}
@@ -198,17 +198,16 @@ def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
 
 معك أيضاً صورة الشارت الفعلية لآخر فترة تداول.
 
-المطلوب:
-1. اكتب فقرة قصيرة (3-4 أسطر) بالعربية تصف الوضع الحالي للزوج بأسلوب واضح ومفيد،
-   بالاستفادة من الشكل البصري للشارت (هل هناك نمط واضح مثل مثلث أو قناة؟) والأخبار.
-2. إذا كان هناك سيناريو فني منطقي مبني على مبدأ تحليل فني معروف (وليس تنبؤاً قطعياً)
-   يتعلق بمستوى قريب آخر، اكتبه في فقرة منفصلة تبدأ بالضبط بكلمة "⚠️ تنبؤ:".
-   إذا لم يوجد سيناريو واضح، لا تكتب هذا الجزء إطلاقاً.
-3. إذا وجدت الأخبار تتعارض بشكل خطير مع هذا الاتجاه، أو الشارت لا يدعم الاختراق بوضوح كافٍ،
-   اكتب "SKIP" متبوعة بسطر جديد يشرح السبب باختصار (سطر أو سطرين بالعربية).
+المطلوب: رد بصيغة JSON فقط، بدون أي نص خارج الأقواس، بهذا الشكل بالضبط:
 
-لا تستخدم أي مقدمات، ابدأ مباشرة بالنص المطلوب.
-"""
+{{
+  "decision": "GO" أو "SKIP",
+  "summary": "فقرة قصيرة (3-4 أسطر) بالعربية تصف الوضع الحالي بأسلوب واضح ومفيد، بالاستفادة من الشكل البصري للشارت (هل هناك نمط واضح مثل مثلث أو قناة؟) والأخبار",
+  "next_target": "توقع لمستوى قريب ثاني إذا كان فيه سيناريو منطقي واضح، أو فارغ لو لا يوجد",
+  "skip_reason": "إذا كان decision هو SKIP، اكتب هنا سبب واضح ومختصر (سطر أو سطرين): هل الأخبار تتعارض بشكل خطير مع الاتجاه؟ أو الشارت غير مقنع بصرياً؟ إذا كان decision هو GO، اترك هذا الحقل فارغاً"
+}}
+
+لا تكتب أي مقدمات أو نص خارج الـ JSON. لا تستخدم علامات ```json أو أي تنسيق آخر، فقط الكائن JSON مباشرة."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
     body = {
         "contents": [{
@@ -216,16 +215,44 @@ def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
                 {"text": prompt},
                 {"inline_data": {"mime_type": "image/png", "data": chart_b64}}
             ]
-        }]
+        }],
+        "generationConfig": {
+            "response_mime_type": "application/json"
+        }
     }
-    r = requests.post(url, json=body, timeout=60)
-    result = r.json()
     try:
-        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError):
-        return "SKIP"
+        r = requests.post(url, json=body, timeout=60)
+        result = r.json()
+        raw_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        print(f"--- رد Gemini الخام لـ {pair} ---")
+        print(raw_text)
+        print("--- نهاية الرد ---")
 
+        import json
+        parsed = json.loads(raw_text)
 
+        decision = parsed.get("decision", "SKIP").strip().upper()
+        summary = parsed.get("summary", "").strip()
+        next_target = parsed.get("next_target", "").strip()
+        skip_reason = parsed.get("skip_reason", "").strip()
+
+        if decision == "GO":
+            final_text = summary
+            if next_target:
+                final_text += f"\n\nالهدف القادم المحتمل: {next_target}"
+            return final_text
+        else:
+            reason = skip_reason if skip_reason else "لم يتم تحديد سبب من Gemini"
+            return f"SKIP\n{reason}"
+
+    except Exception as e:
+        print(f"⚠️ خطأ في معالجة رد Gemini لـ {pair}: {e}")
+        try:
+            print(f"محتوى الرد الخام: {result}")
+        except Exception:
+            print(f"لم يصل رد صالح من الخادم. status_code: {r.status_code if 'r' in dir() else 'غير معروف'}, نص الرد: {r.text if 'r' in dir() else 'غير متوفر'}")
+        return "SKIP\nخطأ تقني في معالجة رد Gemini (راجع اللوق)"
+             
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
