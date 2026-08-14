@@ -208,7 +208,7 @@ def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
 }}
 
 لا تكتب أي مقدمات أو نص خارج الـ JSON. لا تستخدم علامات ```json أو أي تنسيق آخر، فقط الكائن JSON مباشرة."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={GEMINI_KEY}"
     body = {
         "contents": [{
             "parts": [
