@@ -1,0 +1,57 @@
+name: Check Min Trade Size
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-size:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check minimum deal size for pairs
+        env:
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_API_PASSWORD: ${{ secrets.CAPITAL_API_PASSWORD }}
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+        run: |
+          pip install requests
+          python3 << 'EOF'
+          import requests, os
+
+          BASE = "https://demo-api-capital.backend-capital.com/api/v1"
+
+          r = requests.post(f"{BASE}/session", json={
+              "identifier": os.environ["CAPITAL_IDENTIFIER"],
+              "password": os.environ["CAPITAL_API_PASSWORD"]
+          }, headers={
+              "X-CAP-API-KEY": os.environ["CAPITAL_API_KEY"],
+              "Content-Type": "application/json"
+          })
+
+          cst = r.headers.get("CST")
+          sec = r.headers.get("X-SECURITY-TOKEN")
+          print("Login status:", r.status_code)
+
+          headers = {
+              "X-CAP-API-KEY": os.environ["CAPITAL_API_KEY"],
+              "CST": cst,
+              "X-SECURITY-TOKEN": sec
+          }
+
+          pairs = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
+                   "USDCAD", "GBPJPY", "EURJPY"]
+
+          for p in pairs:
+              res = requests.get(f"{BASE}/markets", params={"searchTerm": p}, headers=headers)
+              data = res.json()
+              markets = data.get("markets", [])
+              if markets:
+                  m = markets[0]
+                  epic = m.get("epic")
+                  detail_res = requests.get(f"{BASE}/markets/{epic}", headers=headers)
+                  detail = detail_res.json()
+                  rules = detail.get("dealingRules", {})
+                  min_size = rules.get("minDealSize", {}).get("value", "unknown")
+                  print(f"{p} -> epic: {epic} | min deal size: {min_size}")
+              else:
+                  print(f"{p} -> no result")
+          EOF
