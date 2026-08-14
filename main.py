@@ -51,7 +51,6 @@ def get_forex_data_batch(pairs):
         result[pair] = df
     return result
 
-
 def find_nearest_levels(df, window=5):
     """يلاقي أقرب دعم ومقاومة حقيقيين (نقاط ارتداد سابقة فعلية)"""
     highs = df["high"]
@@ -74,7 +73,6 @@ def find_nearest_levels(df, window=5):
     resistance = min(resistances_above) if resistances_above else highs.max()
     support = max(supports_below) if supports_below else lows.min()
     return support, resistance
-
 
 def compute_indicators(df):
     close = df["close"]
@@ -131,9 +129,8 @@ def compute_indicators(df):
         "adx_ok": adx > 25,
     }
 
-
 def passes_conditions(ind):
-    """فحص أولي حتمي (بدون AI): هل توفرت الشروط الفنية + اختراق فعلي؟"""
+    """هل توفرت الشروط الفنية + اختراق فعلي؟ (بدون AI) فحص أولي حتمي"""
     if not ind["adx_ok"]:
         return None
     if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > 55:
@@ -141,7 +138,6 @@ def passes_conditions(ind):
     if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < 45:
         return "هابط"
     return None
-
 
 def generate_chart(df, pair, support, resistance):
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
@@ -158,7 +154,6 @@ def generate_chart(df, pair, support, resistance):
     plt.close(fig)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
-
 
 def get_forex_news():
     url = "https://www.alphavantage.co/query"
@@ -180,7 +175,6 @@ def get_forex_news():
         return "\n".join(headlines) if headlines else "لا توجد أخبار متاحة حالياً"
     except Exception:
         return "لا توجد أخبار متاحة حالياً"
-
 
 def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
     prompt = f"""أنت محلل فني وإخباري محترف للفوركس. زوج {pair} حقق اختراقاً فعلياً {direction}.
@@ -253,11 +247,10 @@ def ask_gemini_vision(pair, direction, ind, news_text, chart_b64):
         except Exception:
             print(f"لم يصل رد صالح من الخادم. status_code: {r.status_code if 'r' in dir() else 'غير معروف'}, نص الرد: {r.text if 'r' in dir() else 'غير متوفر'}")
         return "SKIP\nخطأ تقني في معالجة رد Gemini (راجع اللوق)"
-             
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
-
 
 def capital_login():
     r = requests.post(f"{CAPITAL_BASE}/session", json={
@@ -277,7 +270,6 @@ def capital_login():
         "Content-Type": "application/json"
     }
 
-
 def get_balance(headers):
     r = requests.get(f"{CAPITAL_BASE}/accounts", headers=headers)
     data = r.json()
@@ -285,7 +277,6 @@ def get_balance(headers):
         return data["accounts"][0]["balance"]["balance"]
     except (KeyError, IndexError):
         return None
-
 
 def has_open_position(headers):
     r = requests.get(f"{CAPITAL_BASE}/positions", headers=headers)
@@ -313,8 +304,39 @@ def open_trade(pair, direction, ind):
     profit_distance = round(stop_distance * RR_RATIO, 5)
 
     risk_amount = balance * RISK_PERCENT
-    size = round(risk_amount / (stop_distance
+    size = round(risk_amount / (stop_distance * 10000), 2)
+    size = max(size, 100)
 
+    deal_direction = "BUY" if direction == "صاعد" else "SELL"
+
+    stop_points = round(stop_distance * 10000, 1)
+    profit_points = round(profit_distance * 10000, 1)
+
+    def send_order(stop_pts, profit_pts):
+        payload = {
+            "epic": epic,
+            "direction": deal_direction,
+            "size": size,
+            "stopDistance": stop_pts,
+            "profitDistance": profit_pts
+        }
+        return requests.post(f"{CAPITAL_BASE}/positions", json=payload, headers=headers)
+
+    r = send_order(stop_points, profit_points)
+    print(f"فتح صفقة {pair} ({deal_direction}) - status: {r.status_code}")
+    print(r.text)
+
+    if r.status_code != 200:
+        import re
+        match = re.search(r'maxvalue["\']?:?\s*([0-9]+\.?[0-9]*)', r.text)
+        if match:
+            max_allowed = float(match.group(1))
+            new_stop = round(max_allowed * 0.9, 1)
+            new_profit = round(new_stop * RR_RATIO, 1)
+            print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أصغر ({new_stop} نقطة)")
+            r2 = send_order(new_stop, new_profit)
+            print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r2.status_code}")
+            print(r2.text)
 
 def main():
     now = datetime.now(timezone.utc)
@@ -383,3 +405,4 @@ ATR: {ind['atr']}
 
 if __name__ == "__main__":
     main()
+                   
