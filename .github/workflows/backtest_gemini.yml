@@ -102,7 +102,7 @@ jobs:
 
           def generate_chart(df, pair, support, resistance):
               fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
-              ax.plot(df["close"].tail(120).values, color="#2196F3", linewidth=1.3, label="السعر")
+              ax.plot(df["close"].tail(250).values, color="#2196F3", linewidth=1.3, label="السعر")
               ax.axhline(support, color="#4CAF50", linestyle="--", linewidth=1, label="دعم")
               ax.axhline(resistance, color="#F44336", linestyle="--", linewidth=1, label="مقاومة")
               ax.set_title(pair)
@@ -123,15 +123,18 @@ jobs:
                   "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/png", "data": chart_b64}}]}],
                   "generationConfig": {"response_mime_type": "application/json", "thinking_config": {"thinking_budget": 0}}
               }
-              try:
-                  r = requests.post(url, json=body, timeout=90)
-                  result = r.json()
-                  raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-                  parsed = json.loads(raw)
-                  return parsed.get("decision", "SKIP").strip().upper()
-              except Exception as e:
-                  print(f"خطأ Gemini: {e}")
-                  return "ERROR"
+              for attempt in range(3):
+                  try:
+                      r = requests.post(url, json=body, timeout=120)
+                      result = r.json()
+                      raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                      parsed = json.loads(raw)
+                      return parsed.get("decision", "SKIP").strip().upper()
+                  except Exception as e:
+                      print(f" محاولة {attempt+1} فشلت: {e}")
+                      if attempt < 2:
+                          time.sleep(20)
+              return "ERROR"
 
           def find_trades_with_context(df):
               trades = []
@@ -195,7 +198,7 @@ jobs:
                       go_results.append(t["result"])
                   elif decision == "SKIP":
                       skip_results.append(t["result"])
-                  time.sleep(6)
+                  time.sleep(15)
               time.sleep(8)
 
           def winrate(results):
