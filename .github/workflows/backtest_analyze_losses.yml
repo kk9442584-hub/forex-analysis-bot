@@ -1,4 +1,4 @@
-name: Backtest New Filters
+name: Backtest With Indicators
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     steps:
-      - name: Run backtest with new filters
+      - name: Run backtest with multiple indicators
         env:
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
         run: |
@@ -15,11 +15,12 @@ jobs:
           python3 << 'EOF'
           import requests, os, time
           import pandas as pd
+          import numpy as np
 
           TWELVE_DATA_KEY = os.environ["TWELVE_DATA_KEY"]
           RR_RATIO = 2
-          ATR_MULTIPLIER = 2.0
-          ADX_THRESHOLD = 30
+          ATR_MULTIPLIER = 1.5
+          ADX_THRESHOLD = 25
           RSI_BUY_THRESHOLD = 60
           RSI_SELL_THRESHOLD = 40
           PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD"]
@@ -57,27 +58,62 @@ jobs:
 
           def compute_indicators(df):
               close = df["close"]; high = df["high"]; low = df["low"]
+              
+              # EMA
               ema50 = close.ewm(span=50).mean().iloc[-1]
               ema200 = close.ewm(span=200).mean().iloc[-1]
+              
+              # RSI
               delta = close.diff()
               gain = delta.where(delta > 0, 0).rolling(14).mean()
               loss = -delta.where(delta < 0, 0).rolling(14).mean()
               rs = gain / loss
               rsi = (100 - (100 / (1 + rs))).iloc[-1]
+              
+              # ATR
               tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
               atr = tr.rolling(14).mean().iloc[-1]
+              
+              # ADX
               plus_dm = (high.diff()).clip(lower=0)
               minus_dm = (-low.diff()).clip(lower=0)
               plus_di = 100 * (plus_dm.rolling(14).mean() / tr.rolling(14).mean())
               minus_di = 100 * (minus_dm.rolling(14).mean() / tr.rolling(14).mean())
               dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
               adx = dx.rolling(14).mean().iloc[-1]
+              
+              # ✅ MACD
+              ema12 = close.ewm(span=12).mean()
+              ema26 = close.ewm(span=26).mean()
+              macd_line = ema12 - ema26
+              signal_line = macd_line.ewm(span=9).mean()
+              macd_hist = macd_line.iloc[-1] - signal_line.iloc[-1]
+              macd_prev = macd_line.iloc[-2] - signal_line.iloc[-2]
+              macd_bullish_cross = (macd_line.iloc[-2] < signal_line.iloc[-2]) and (macd_line.iloc[-1] > signal_line.iloc[-1])
+              macd_bearish_cross = (macd_line.iloc[-2] > signal_line.iloc[-2]) and (macd_line.iloc[-1] < signal_line.iloc[-1])
+              
+              # ✅ Bollinger Bands
+              sma20 = close.rolling(20).mean().iloc[-1]
+              std20 = close.rolling(20).std().iloc[-1]
+              bb_upper = sma20 + (2 * std20)
+              bb_lower = sma20 - (2 * std20)
               price = close.iloc[-1]
+              bb_position = (price - bb_lower) / (bb_upper - bb_lower)  # 0 = أسفل، 1 = أعلى
+              
+              # ✅ Volume (إذا موجود)
+              volume_ok = True
+              if "volume" in df.columns:
+                  avg_vol = df["volume"].rolling(20).mean().iloc[-1]
+                  current_vol = df["volume"].iloc[-1]
+                  volume_ok = current_vol > avg_vol * 0.8
+              
+              # Breakout
               prev_close = close.iloc[-2]
               support_prev, resistance_prev = find_nearest_levels(df.iloc[:-2])
               bullish_breakout = (price > resistance_prev) and (prev_close > resistance_prev)
               bearish_breakout = (price < support_prev) and (prev_close < support_prev)
               support, resistance = find_nearest_levels(df)
+              
               return {
                   "price": price, "atr": atr, "rsi": rsi, "adx": adx,
                   "support": support, "resistance": resistance,
@@ -86,15 +122,31 @@ jobs:
                   "trend_up": ema50 > ema200,
                   "trend_down": ema50 < ema200,
                   "adx_ok": adx > ADX_THRESHOLD,
+                  "macd_hist": macd_hist,
+                  "macd_bullish_cross": macd_bullish_cross,
+                  "macd_bearish_cross": macd_bearish_cross,
+                  "bb_position": bb_position,
+                  "volume_ok": volume_ok,
               }
 
           def passes_conditions(ind):
+              # شروط أساسية
               if not ind["adx_ok"]:
                   return None
+              if not ind["volume_ok"]:
+                  return None
+              
+              # ✅ شروط MACD + Bollinger
               if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > RSI_BUY_THRESHOLD:
-                  return "صاعد"
+                  # MACD إيجابي + Bollinger ما بحدود الذروة
+                  if ind["macd_hist"] > 0 and ind["bb_position"] < 0.95:
+                      return "صاعد"
+              
               if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < RSI_SELL_THRESHOLD:
-                  return "هابط"
+                  # MACD سلبي + Bollinger ما بحدود القاع
+                  if ind["macd_hist"] < 0 and ind["bb_position"] > 0.05:
+                      return "هابط"
+              
               return None
 
           def backtest_pair(df):
@@ -139,9 +191,9 @@ jobs:
               return trades
 
           print("=" * 70)
-          print("🆕 باك تست بالتعديلات الجديدة")
+          print("🆕 باك تست الوسط + مؤشرات جديدة (MACD + Bollinger + Volume)")
           print(f"ATR: {ATR_MULTIPLIER} | ADX: {ADX_THRESHOLD} | RSI: {RSI_BUY_THRESHOLD}/{RSI_SELL_THRESHOLD}")
-          print(f"الأزواج: {len(PAIRS)} (بدون GBP/JPY, EUR/JPY)")
+          print(f"الأزواج: {len(PAIRS)}")
           print("=" * 70)
           
           all_results = {}
@@ -173,14 +225,15 @@ jobs:
           print(f"✅ Win Rate: {overall_winrate}%")
           print()
           print("📋 للمقارنة:")
-          print("  - القديم (RSI 55/45, ADX 25, ATR 1.5, 8 أزواج): 31.5%")
-          print(f"  - الجديد (RSI 60/40, ADX 30, ATR 2.0, 6 أزواج): {overall_winrate}%")
+          print("  - القديم 1 (RSI 55/45, ADX 25, ATR 1.5, 8 أزواج): 31.5%")
+          print("  - الجديد 1 (RSI 60/40, ADX 30, ATR 2.0, 6 أزواج): 27.9%")
+          print(f"  - الجديد 2 (وسط + MACD + Bollinger + Volume): {overall_winrate}%")
           
           if overall_winrate > 31.5:
-              print(f"🎉 تحسن بمقدار {round(overall_winrate - 31.5, 1)} نقطة مئوية!")
+              print(f"🎉 تحسن عن الأصلي بمقدار {round(overall_winrate - 31.5, 1)} نقطة مئوية!")
           elif overall_winrate == 31.5:
               print("😐 نفس النتيجة - نحتاج تعديلات أعمق")
           else:
-              print(f"😔 تراجع بمقدار {round(31.5 - overall_winrate, 1)} نقطة مئوية")
+              print(f"😔 تراجع عن الأصلي بمقدار {round(31.5 - overall_winrate, 1)} نقطة مئوية")
           print("=" * 70)
           EOF
