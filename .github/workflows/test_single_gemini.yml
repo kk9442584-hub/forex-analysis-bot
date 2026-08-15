@@ -1,0 +1,34 @@
+name: Test Single Gemini Call
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-call:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Single Gemini test
+        env:
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+        run: |
+          pip install requests
+          python3 << 'EOF'
+          import requests, os, time
+
+          GEMINI_KEY = os.environ["GEMINI_KEY"]
+          start = time.time()
+
+          url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={GEMINI_KEY}"
+          body = {
+              "contents": [{"parts": [{"text": "رد بكلمة واحدة فقط: تمام"}]}],
+              "generationConfig": {"thinking_config": {"thinking_budget": 0}}
+          }
+
+          print("بدء الاختبار...")
+          r = requests.post(url, json=body, timeout=60)
+          elapsed = round(time.time() - start, 2)
+
+          print(f"الوقت المستغرق: {elapsed} ثانية")
+          print(f"status_code: {r.status_code}")
+          print(f"الرد الخام: {r.text}")
+          EOF
