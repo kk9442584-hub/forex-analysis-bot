@@ -24,7 +24,7 @@ jobs:
           GEMINI_KEY = os.environ["GEMINI_KEY"]
           RR_RATIO = 2
           ATR_MULTIPLIER = 1.5
-          MAX_SAMPLES_PER_PAIR = 5
+          MAX_SAMPLES_PER_PAIR = 2
           PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
                    "USD/CAD", "GBP/JPY", "EUR/JPY"]
 
