@@ -1,0 +1,304 @@
+name: Backtest Analyze Losing Trades
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Analyze losing trades patterns
+        env:
+          TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
+        run: |
+          pip install requests pandas
+          python3 << 'EOF'
+          import requests, os, time
+          import pandas as pd
+
+          TWELVE_DATA_KEY = os.environ["TWELVE_DATA_KEY"]
+          ATR_MULTIPLIER = 1.5
+          RR_RATIO = 2
+          PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
+                   "USD/CAD", "GBP/JPY", "EUR/JPY"]
+
+          def fetch_history(pair):
+              url = "https://api.twelvedata.com/time_series"
+              params = {"symbol": pair, "interval": "15min", "outputsize": 1000, "apikey": TWELVE_DATA_KEY}
+              r = requests.get(url, params=params, timeout=30)
+              data = r.json()
+              values = data.get("values")
+              if not values:
+                  return None
+              df = pd.DataFrame(values)
+              for col in ["close", "high", "low", "open"]:
+                  df[col] = df[col].astype(float)
+              if "datetime" in df.columns:
+                  df["datetime"] = pd.to_datetime(df["datetime"])
+              df = df.iloc[::-1].reset_index(drop=True)
+              return df
+
+          def find_nearest_levels(df, window=5):
+              highs = df["high"]; lows = df["low"]; price = df["close"].iloc[-1]
+              swing_highs = []; swing_lows = []
+              for i in range(window, len(df) - window):
+                  wh = highs.iloc[i-window:i+window+1]
+                  wl = lows.iloc[i-window:i+window+1]
+                  if highs.iloc[i] == wh.max():
+                      swing_highs.append(highs.iloc[i])
+                  if lows.iloc[i] == wl.min():
+                      swing_lows.append(lows.iloc[i])
+              resistances_above = [h for h in swing_highs if h > price]
+              supports_below = [l for l in swing_lows if l < price]
+              resistance = min(resistances_above) if resistances_above else highs.max()
+              support = max(supports_below) if supports_below else lows.min()
+              return support, resistance
+
+          def compute_indicators(df):
+              close = df["close"]; high = df["high"]; low = df["low"]
+              ema50 = close.ewm(span=50).mean().iloc[-1]
+              ema200 = close.ewm(span=200).mean().iloc[-1]
+              delta = close.diff()
+              gain = delta.where(delta > 0, 0).rolling(14).mean()
+              loss = -delta.where(delta < 0, 0).rolling(14).mean()
+              rs = gain / loss
+              rsi = (100 - (100 / (1 + rs))).iloc[-1]
+              tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+              atr = tr.rolling(14).mean().iloc[-1]
+              plus_dm = (high.diff()).clip(lower=0)
+              minus_dm = (-low.diff()).clip(lower=0)
+              plus_di = 100 * (plus_dm.rolling(14).mean() / tr.rolling(14).mean())
+              minus_di = 100 * (minus_dm.rolling(14).mean() / tr.rolling(14).mean())
+              dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+              adx = dx.rolling(14).mean().iloc[-1]
+              price = close.iloc[-1]
+              prev_close = close.iloc[-2]
+              
+              support_prev, resistance_prev = find_nearest_levels(df.iloc[:-2])
+              bullish_breakout = (price > resistance_prev) and (prev_close > resistance_prev)
+              bearish_breakout = (price < support_prev) and (prev_close < support_prev)
+              support, resistance = find_nearest_levels(df)
+              
+              return {
+                  "price": price, "atr": atr, "rsi": rsi, "adx": adx,
+                  "support": support, "resistance": resistance,
+                  "bullish_breakout": bool(bullish_breakout),
+                  "bearish_breakout": bool(bearish_breakout),
+                  "trend_up": ema50 > ema200,
+                  "trend_down": ema50 < ema200,
+                  "adx_ok": adx > 25,
+              }
+
+          def passes_conditions(ind):
+              if not ind["adx_ok"]:
+                  return None
+              if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > 55:
+                  return "صاعد"
+              if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < 45:
+                  return "هابط"
+              return None
+
+          def backtest_with_details(df, pair):
+              trades = []
+              in_trade = False
+              stop = target = trade_direction = None
+              entry_idx = None
+              i = 300
+              while i < len(df) - 1:
+                  if not in_trade:
+                      window_df = df.iloc[:i+1]
+                      ind = compute_indicators(window_df)
+                      direction = passes_conditions(ind)
+                      if direction:
+                          entry = ind["price"]
+                          stop_dist = ind["atr"] * ATR_MULTIPLIER
+                          profit_dist = stop_dist * RR_RATIO
+                          if direction == "صاعد":
+                              stop = entry - stop_dist
+                              target = entry + profit_dist
+                          else:
+                              stop = entry + stop_dist
+                              target = entry - profit_dist
+                          in_trade = True
+                          trade_direction = direction
+                          entry_idx = i
+                          # حفظ بيانات الدخول
+                          trade_data = {
+                              "pair": pair,
+                              "direction": direction,
+                              "entry_price": entry,
+                              "stop": stop,
+                              "target": target,
+                              "rsi_entry": ind["rsi"],
+                              "adx_entry": ind["adx"],
+                              "atr_entry": ind["atr"],
+                              "support": ind["support"],
+                              "resistance": ind["resistance"],
+                              "entry_time": df.iloc[i].get("datetime", f"index_{i}"),
+                              "trend_up": ind["trend_up"],
+                              "trend_down": ind["trend_down"],
+                          }
+                  else:
+                      candle = df.iloc[i]
+                      hit_target = hit_stop = False
+                      if trade_direction == "صاعد":
+                          if candle["low"] <= stop:
+                              hit_stop = True
+                          elif candle["high"] >= target:
+                              hit_target = True
+                      else:
+                          if candle["high"] >= stop:
+                              hit_stop = True
+                          elif candle["low"] <= target:
+                              hit_target = True
+                      if hit_target or hit_stop:
+                          trade_data["result"] = "ربح" if hit_target else "خسارة"
+                          trade_data["exit_time"] = df.iloc[i].get("datetime", f"index_{i}")
+                          # حساب حجم الخسارة
+                          if trade_data["result"] == "خسارة":
+                              if trade_direction == "صاعد":
+                                  trade_data["points_lost"] = round(entry - stop, 5)
+                              else:
+                                  trade_data["points_lost"] = round(stop - entry, 5)
+                          trades.append(trade_data)
+                          in_trade = False
+                  i += 1
+              return trades
+
+          print("=" * 70)
+          print("🔍 تحليل الصفقات الخاسرة - البحث عن الأنماط")
+          print("=" * 70)
+          
+          all_trades = []
+          for pair in PAIRS:
+              df = fetch_history(pair)
+              if df is None or len(df) < 350:
+                  print(f"❌ {pair}: بيانات غير كافية")
+                  continue
+              trades = backtest_with_details(df, pair)
+              all_trades.extend(trades)
+              print(f"✅ {pair}: {len(trades)} صفقة")
+              time.sleep(8)
+
+          losing_trades = [t for t in all_trades if t["result"] == "خسارة"]
+          winning_trades = [t for t in all_trades if t["result"] == "ربح"]
+          
+          total = len(all_trades)
+          wins = len(winning_trades)
+          losses = len(losing_trades)
+          winrate = round((wins / total) * 100, 1) if total else 0
+          
+          print()
+          print("=" * 70)
+          print("📊 الإحصائيات العامة")
+          print("=" * 70)
+          print(f"إجمالي الصفقات: {total}")
+          print(f"الصفقات الرابحة: {wins} ({round(wins/total*100, 1) if total else 0}%)")
+          print(f"الصفقات الخاسرة: {losses} ({round(losses/total*100, 1) if total else 0}%)")
+          
+          if not losing_trades:
+              print("\n🎉 ما في صفقات خاسرة!")
+          else:
+              print()
+              print("=" * 70)
+              print("🔍 تحليل الصفقات الخاسرة")
+              print("=" * 70)
+              
+              # تحليل حسب الزوج
+              print("\n📌 الخسائر حسب الزوج:")
+              pair_losses = {}
+              for t in losing_trades:
+                  pair_losses.setdefault(t["pair"], []).append(t)
+              for p, trades in sorted(pair_losses.items(), key=lambda x: -len(x[1])):
+                  total_pair = len([t for t in all_trades if t["pair"] == p])
+                  print(f"  {p}: {len(trades)}/{total_pair} ({round(len(trades)/total_pair*100, 1)}%)")
+              
+              # تحليل RSI وقت الدخول
+              print("\n📌 توزيع RSI وقت الدخول (الخاسرات):")
+              rsi_ranges = {"30-40": 0, "40-50": 0, "50-60": 0, "60-70": 0, "70-80": 0}
+              for t in losing_trades:
+                  rsi = t["rsi_entry"]
+                  if 30 <= rsi < 40: rsi_ranges["30-40"] += 1
+                  elif 40 <= rsi < 50: rsi_ranges["40-50"] += 1
+                  elif 50 <= rsi < 60: rsi_ranges["50-60"] += 1
+                  elif 60 <= rsi < 70: rsi_ranges["60-70"] += 1
+                  elif 70 <= rsi < 80: rsi_ranges["70-80"] += 1
+              for r, count in rsi_ranges.items():
+                  pct = round(count / losses * 100, 1) if losses else 0
+                  bar = "█" * int(pct / 2)
+                  print(f"  {r}: {count} ({pct}%) {bar}")
+              
+              # تحليل ADX
+              print("\n📌 توزيع ADX وقت الدخول (الخاسرات):")
+              adx_ranges = {"20-25": 0, "25-30": 0, "30-40": 0, "40+": 0}
+              for t in losing_trades:
+                  adx = t["adx_entry"]
+                  if 20 <= adx < 25: adx_ranges["20-25"] += 1
+                  elif 25 <= adx < 30: adx_ranges["25-30"] += 1
+                  elif 30 <= adx < 40: adx_ranges["30-40"] += 1
+                  elif adx >= 40: adx_ranges["40+"] += 1
+              for r, count in adx_ranges.items():
+                  pct = round(count / losses * 100, 1) if losses else 0
+                  bar = "█" * int(pct / 2)
+                  print(f"  {r}: {count} ({pct}%) {bar}")
+              
+              # تحليل الاتجاه
+              print("\n📌 الخسائر حسب الاتجاه:")
+              up_losses = sum(1 for t in losing_trades if t["direction"] == "صاعد")
+              down_losses = sum(1 for t in losing_trades if t["direction"] == "هابط")
+              print(f"  صفقات صاعدة خاسرة: {up_losses} ({round(up_losses/losses*100, 1) if losses else 0}%)")
+              print(f"  صفقات هابطة خاسرة: {down_losses} ({round(down_losses/losses*100, 1) if losses else 0}%)")
+              
+              # مقارنة مع الرابحات
+              if winning_trades:
+                  print("\n📌 المقارنة بين الرابحات والخاسرات:")
+                  avg_rsi_wins = round(sum(t["rsi_entry"] for t in winning_trades) / len(winning_trades), 2)
+                  avg_rsi_losses = round(sum(t["rsi_entry"] for t in losing_trades) / len(losing_trades), 2)
+                  avg_adx_wins = round(sum(t["adx_entry"] for t in winning_trades) / len(winning_trades), 2)
+                  avg_adx_losses = round(sum(t["adx_entry"] for t in losing_trades) / len(losing_trades), 2)
+                  print(f"  متوسط RSI الرابحات: {avg_rsi_wins}")
+                  print(f"  متوسط RSI الخاسرات: {avg_rsi_losses}")
+                  print(f"  متوسط ADX الرابحات: {avg_adx_wins}")
+                  print(f"  متوسط ADX الخاسرات: {avg_adx_losses}")
+              
+              # تفاصيل كل صفقة خاسرة
+              print()
+              print("=" * 70)
+              print("📋 تفاصيل كل الصفقات الخاسرة")
+              print("=" * 70)
+              for i, t in enumerate(losing_trades, 1):
+                  print(f"\n--- خسارة #{i} ---")
+                  print(f"  الزوج: {t['pair']} | الاتجاه: {t['direction']}")
+                  print(f"  RSI: {t['rsi_entry']} | ADX: {t['adx_entry']}")
+                  print(f"  ATR: {t['atr_entry']} | نقاط خاسرة: {t['points_lost']}")
+                  print(f"  سعر الدخول: {t['entry_price']} | ستوب: {t['stop']}")
+                  print(f"  دعم: {t['support']} | مقاومة: {t['resistance']}")
+                  print(f"  الوقت: {t['entry_time']}")
+              
+              # استنتاجات
+              print()
+              print("=" * 70)
+              print("💡 استنتاجات وتوصيات")
+              print("=" * 70)
+              
+              # هل RSI 55-60 مشكلة؟
+              rsi_55_60_losses = sum(1 for t in losing_trades if 55 <= t["rsi_entry"] < 60)
+              rsi_60_70_losses = sum(1 for t in losing_trades if 60 <= t["rsi_entry"] < 70)
+              if rsi_55_60_losses + rsi_60_70_losses > losses * 0.5:
+                  print("⚠️ أكثر من 50% من الخسائر RSI فيها 55-70 — ممكن نرفع العتبة لـ 60 أو 65")
+              
+              # هل ADX 25-30 مشكلة؟
+              adx_25_30_losses = sum(1 for t in losing_trades if 25 <= t["adx_entry"] < 30)
+              if adx_25_30_losses > losses * 0.4:
+                  print("⚠️ أكثر من 40% من الخسائر ADX فيها 25-30 — ممكن نرفع العتبة لـ 30")
+              
+              # الأزواج الأكثر خسارة
+              worst_pair = max(pair_losses.items(), key=lambda x: len(x[1]))
+              if len(worst_pair[1]) > losses * 0.25:
+                  print(f"⚠️ الزوج {worst_pair[0]} مسؤول عن {round(len(worst_pair[1])/losses*100, 1)}% من الخسائر — فكّر بتعطيله")
+          
+          print()
+          print("=" * 70)
+          print("✅ انتهى التحليل")
+          print("=" * 70)
+          EOF
