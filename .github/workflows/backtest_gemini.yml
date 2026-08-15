@@ -123,18 +123,15 @@ jobs:
                   "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/png", "data": chart_b64}}]}],
                   "generationConfig": {"response_mime_type": "application/json", "thinking_config": {"thinking_budget": 0}}
               }
-              for attempt in range(3):
-                  try:
-                      r = requests.post(url, json=body, timeout=120)
-                      result = r.json()
-                      raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-                      parsed = json.loads(raw)
-                      return parsed.get("decision", "SKIP").strip().upper()
-                  except Exception as e:
-                      print(f" محاولة {attempt+1} فشلت: {e}")
-                      if attempt < 2:
-                          time.sleep(20)
-              return "ERROR"
+              try:
+                  r = requests.post(url, json=body, timeout=120)
+                  result = r.json()
+                  raw = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                  parsed = json.loads(raw)
+                  return parsed.get("decision", "SKIP").strip().upper()
+              except Exception as e:
+                  print(f" فشلت: {e}")
+                  return "ERROR"
 
           def find_trades_with_context(df):
               trades = []
@@ -180,8 +177,15 @@ jobs:
           print("بدء اختبار تأثير فلترة Gemini (عينة من كل زوج)")
           go_results = []
           skip_results = []
+          MAX_TOTAL_SECONDS = 300
+          start_time = time.time()
+          stopped_early = False
 
           for pair in PAIRS:
+              if time.time() - start_time > MAX_TOTAL_SECONDS:
+                  print(f"⏱️ تم تجاوز الوقت المخصص (5 دقائق) - إيقاف الفحص عند {pair}")
+                  stopped_early = True
+                  break
               df = fetch_history(pair)
               if df is None or len(df) < 350:
                   print(f"{pair}: بيانات غير كافية")
@@ -190,6 +194,10 @@ jobs:
               sample = trades[:MAX_SAMPLES_PER_PAIR]
               print(f"===== {pair} ===== (عينة {len(sample)} من أصل {len(trades)} صفقة)")
               for t in sample:
+                  if time.time() - start_time > MAX_TOTAL_SECONDS:
+                      print(f"⏱️ تم تجاوز الوقت المخصص (5 دقائق) - إيقاف الفحص أثناء {pair}")
+                      stopped_early = True
+                      break
                   window_df = df.iloc[:t["entry_index"]+1]
                   chart_b64 = generate_chart(window_df, pair, t["ind"]["support"], t["ind"]["resistance"])
                   decision = ask_gemini(pair, t["direction"], t["ind"], chart_b64)
@@ -199,7 +207,12 @@ jobs:
                   elif decision == "SKIP":
                       skip_results.append(t["result"])
                   time.sleep(15)
+              if stopped_early:
+                  break
               time.sleep(8)
+
+          if stopped_early:
+              print("⚠️ الفحص توقف مبكراً بسبب تجاوز الوقت المحدد (5 دقائق) - النتائج أدناه جزئية")
 
           def winrate(results):
               if not results:
