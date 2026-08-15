@@ -25,7 +25,7 @@ jobs:
           }
 
           print("بدء الاختبار...")
-          r = requests.post(url, json=body, timeout=60)
+          r = requests.post(url, json=body, timeout=120)
           elapsed = round(time.time() - start, 2)
 
           print(f"الوقت المستغرق: {elapsed} ثانية")
