@@ -1,4 +1,4 @@
-name: Backtest Multi-Timeframe
+name: Backtest Breakout Confirmation
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     steps:
-      - name: Run multi-timeframe backtest
+      - name: Run backtest with breakout confirmation
         env:
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
         run: |
@@ -22,16 +22,15 @@ jobs:
           PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
                    "USD/CAD", "GBP/JPY", "EUR/JPY"]
 
-          def fetch_history(pair, interval, size=1000):
+          def fetch_history(pair):
               url = "https://api.twelvedata.com/time_series"
-              params = {"symbol": pair, "interval": interval, "outputsize": size, "apikey": TWELVE_DATA_KEY}
+              params = {"symbol": pair, "interval": "15min", "outputsize": 1000, "apikey": TWELVE_DATA_KEY}
               r = requests.get(url, params=params, timeout=30)
               data = r.json()
               values = data.get("values")
               if not values:
                   return None
               df = pd.DataFrame(values)
-              df["datetime"] = pd.to_datetime(df["datetime"])
               df["close"] = df["close"].astype(float)
               df["high"] = df["high"].astype(float)
               df["low"] = df["low"].astype(float)
@@ -72,12 +71,18 @@ jobs:
               dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
               adx = dx.rolling(14).mean().iloc[-1]
               price = close.iloc[-1]
+              prev_close = close.iloc[-2]
+
+              support_prev, resistance_prev = find_nearest_levels(df.iloc[:-2])
+
+              bullish_breakout = (price > resistance_prev) and (prev_close > resistance_prev)
+              bearish_breakout = (price < support_prev) and (prev_close < support_prev)
+
               support, resistance = find_nearest_levels(df)
-              support_prev, resistance_prev = find_nearest_levels(df.iloc[:-1])
-              bullish_breakout = price > resistance_prev
-              bearish_breakout = price < support_prev
+
               return {
                   "price": price, "atr": atr, "rsi": rsi, "adx": adx,
+                  "support": support, "resistance": resistance,
                   "bullish_breakout": bool(bullish_breakout),
                   "bearish_breakout": bool(bearish_breakout),
                   "trend_up": ema50 > ema200,
@@ -94,46 +99,30 @@ jobs:
                   return "هابط"
               return None
 
-          def get_htf_trend(htf_df, current_time):
-              past = htf_df[htf_df["datetime"] <= current_time]
-              if len(past) < 210:
-                  return None
-              close = past["close"]
-              ema50 = close.ewm(span=50).mean().iloc[-1]
-              ema200 = close.ewm(span=200).mean().iloc[-1]
-              if ema50 > ema200:
-                  return "صاعد"
-              elif ema50 < ema200:
-                  return "هابط"
-              return None
-
-          def backtest_pair_mtf(ltf_df, htf_df):
+          def backtest_pair(df):
               trades = []
               in_trade = False
               stop = target = trade_direction = None
               i = 300
-              while i < len(ltf_df) - 1:
+              while i < len(df) - 1:
                   if not in_trade:
-                      window_df = ltf_df.iloc[:i+1]
+                      window_df = df.iloc[:i+1]
                       ind = compute_indicators(window_df)
                       direction = passes_conditions(ind)
                       if direction:
-                          current_time = ltf_df.iloc[i]["datetime"]
-                          htf_trend = get_htf_trend(htf_df, current_time)
-                          if htf_trend == direction:
-                              entry = ind["price"]
-                              stop_dist = ind["atr"] * ATR_MULTIPLIER
-                              profit_dist = stop_dist * RR_RATIO
-                              if direction == "صاعد":
-                                  stop = entry - stop_dist
-                                  target = entry + profit_dist
-                              else:
-                                  stop = entry + stop_dist
-                                  target = entry - profit_dist
-                              in_trade = True
-                              trade_direction = direction
+                          entry = ind["price"]
+                          stop_dist = ind["atr"] * ATR_MULTIPLIER
+                          profit_dist = stop_dist * RR_RATIO
+                          if direction == "صاعد":
+                              stop = entry - stop_dist
+                              target = entry + profit_dist
+                          else:
+                              stop = entry + stop_dist
+                              target = entry - profit_dist
+                          in_trade = True
+                          trade_direction = direction
                   else:
-                      candle = ltf_df.iloc[i]
+                      candle = df.iloc[i]
                       hit_target = hit_stop = False
                       if trade_direction == "صاعد":
                           if candle["low"] <= stop:
@@ -151,17 +140,14 @@ jobs:
                   i += 1
               return trades
 
-          print("بدء باك تيست تأكيد الفريمين (ساعة للاتجاه + 15 دقيقة للدخول)")
+          print("بدء الباك تيست - تأكيد استمرارية الاختراق (شمعتين متتاليتين)")
           all_results = {}
           for pair in PAIRS:
-              ltf_df = fetch_history(pair, "15min", 1000)
-              time.sleep(8)
-              htf_df = fetch_history(pair, "1h", 500)
-              time.sleep(8)
-              if ltf_df is None or htf_df is None or len(ltf_df) < 350 or len(htf_df) < 210:
+              df = fetch_history(pair)
+              if df is None or len(df) < 350:
                   print(f"{pair}: بيانات غير كافية")
                   continue
-              trades = backtest_pair_mtf(ltf_df, htf_df)
+              trades = backtest_pair(df)
               wins = sum(1 for t in trades if t["result"] == "ربح")
               losses = sum(1 for t in trades if t["result"] == "خسارة")
               total = len(trades)
@@ -169,11 +155,12 @@ jobs:
               print(f"===== {pair} =====")
               print(f"عدد الصفقات: {total} | ربح: {wins} | خسارة: {losses} | نسبة النجاح: {winrate}%")
               all_results[pair] = {"total": total, "wins": wins, "losses": losses}
+              time.sleep(8)
 
           total_trades = sum(v["total"] for v in all_results.values())
           total_wins = sum(v["wins"] for v in all_results.values())
           overall_winrate = round((total_wins / total_trades) * 100, 1) if total_trades else 0
-          print("===== الإجمالي (تأكيد ساعة + 15 دقيقة) =====")
+          print("===== الإجمالي (تأكيد استمرارية الاختراق) =====")
           print(f"إجمالي الصفقات: {total_trades} | نسبة النجاح الكلية: {overall_winrate}%")
-          print("للمقارنة: 15 دقيقة بدون تأكيد كانت 32.5%")
+          print("للمقارنة: بدون تأكيد كانت 32.5%")
           EOF
