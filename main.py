@@ -141,7 +141,7 @@ def passes_conditions(ind):
 
 def generate_chart(df, pair, support, resistance):
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
-    ax.plot(df["close"].tail(120).values, color="#2196F3", linewidth=1.3, label="السعر")
+    ax.plot(df["close"].tail(250).values, color="#2196F3", linewidth=1.3, label="السعر")
     ax.axhline(support, color="#4CAF50", linestyle="--", linewidth=1, label="دعم")
     ax.axhline(resistance, color="#F44336", linestyle="--", linewidth=1, label="مقاومة")
     ax.set_title(pair)
