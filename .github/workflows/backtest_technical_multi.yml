@@ -1,4 +1,4 @@
-name: Backtest RSI ADX Range
+name: Backtest Combined Model
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     steps:
-      - name: Run backtest with RSI/ADX upper bounds
+      - name: Run combined model backtest
         env:
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
         run: |
@@ -31,6 +31,7 @@ jobs:
               if not values:
                   return None
               df = pd.DataFrame(values)
+              df["open"] = df["open"].astype(float)
               df["close"] = df["close"].astype(float)
               df["high"] = df["high"].astype(float)
               df["low"] = df["low"].astype(float)
@@ -53,6 +54,39 @@ jobs:
               support = max(supports_below) if supports_below else lows.min()
               return support, resistance
 
+          def candle_strength_ok(df, direction):
+              c = df.iloc[-1]
+              rng = c["high"] - c["low"]
+              if rng == 0:
+                  return False
+              body = abs(c["close"] - c["open"])
+              body_ratio = body / rng
+              if body_ratio < 0.5:
+                  return False
+              if direction == "صاعد":
+                  close_pos = (c["close"] - c["low"]) / rng
+                  return close_pos >= 0.65
+              else:
+                  close_pos = (c["high"] - c["close"]) / rng
+                  return close_pos >= 0.65
+
+          def fib_confluence_ok(df, level, tolerance=0.0015):
+              window = df.tail(50)
+              swing_high = window["high"].max()
+              swing_low = window["low"].min()
+              diff = swing_high - swing_low
+              if diff == 0:
+                  return False
+              fib_levels = [
+                  swing_high - diff * 0.382,
+                  swing_high - diff * 0.5,
+                  swing_high - diff * 0.618,
+              ]
+              for fl in fib_levels:
+                  if abs(level - fl) / level <= tolerance:
+                      return True
+              return False
+
           def compute_indicators(df):
               close = df["close"]; high = df["high"]; low = df["low"]
               ema50 = close.ewm(span=50).mean().iloc[-1]
@@ -61,7 +95,8 @@ jobs:
               gain = delta.where(delta > 0, 0).rolling(14).mean()
               loss = -delta.where(delta < 0, 0).rolling(14).mean()
               rs = gain / loss
-              rsi = (100 - (100 / (1 + rs))).iloc[-1]
+              rsi_series = 100 - (100 / (1 + rs))
+              rsi = rsi_series.iloc[-1]
               tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
               atr = tr.rolling(14).mean().iloc[-1]
               plus_dm = (high.diff()).clip(lower=0)
@@ -69,29 +104,46 @@ jobs:
               plus_di = 100 * (plus_dm.rolling(14).mean() / tr.rolling(14).mean())
               minus_di = 100 * (minus_dm.rolling(14).mean() / tr.rolling(14).mean())
               dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-              adx = dx.rolling(14).mean().iloc[-1]
+              adx_series = dx.rolling(14).mean()
+              adx = adx_series.iloc[-1]
+              adx_3ago = adx_series.iloc[-4] if len(adx_series) > 4 else adx
               price = close.iloc[-1]
               support, resistance = find_nearest_levels(df)
               support_prev, resistance_prev = find_nearest_levels(df.iloc[:-1])
               bullish_breakout = price > resistance_prev
               bearish_breakout = price < support_prev
               return {
-                  "price": price, "atr": atr, "rsi": rsi, "adx": adx,
+                  "price": price, "atr": atr, "rsi": rsi, "adx": adx, "adx_3ago": adx_3ago,
+                  "support": support, "resistance": resistance,
+                  "resistance_prev": resistance_prev, "support_prev": support_prev,
                   "bullish_breakout": bool(bullish_breakout),
                   "bearish_breakout": bool(bearish_breakout),
                   "trend_up": ema50 > ema200,
                   "trend_down": ema50 < ema200,
+                  "adx_ok": adx > 25,
               }
 
-          def passes_conditions(ind):
-              rsi = ind["rsi"]; adx = ind["adx"]
-              adx_ok = 25 < adx <= 45
-              if not adx_ok:
+          def passes_conditions(df, ind):
+              if not ind["adx_ok"]:
                   return None
-              if ind["trend_up"] and ind["bullish_breakout"] and 55 < rsi <= 75:
+              adx_rising = ind["adx"] > ind["adx_3ago"]
+              if not adx_rising:
+                  return None
+
+              if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > 55:
+                  if not candle_strength_ok(df, "صاعد"):
+                      return None
+                  if not fib_confluence_ok(df, ind["resistance_prev"]):
+                      return None
                   return "صاعد"
-              if ind["trend_down"] and ind["bearish_breakout"] and 25 <= rsi < 45:
+
+              if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < 45:
+                  if not candle_strength_ok(df, "هابط"):
+                      return None
+                  if not fib_confluence_ok(df, ind["support_prev"]):
+                      return None
                   return "هابط"
+
               return None
 
           def backtest_pair(df):
@@ -103,7 +155,7 @@ jobs:
                   if not in_trade:
                       window_df = df.iloc[:i+1]
                       ind = compute_indicators(window_df)
-                      direction = passes_conditions(ind)
+                      direction = passes_conditions(window_df, ind)
                       if direction:
                           entry = ind["price"]
                           stop_dist = ind["atr"] * ATR_MULTIPLIER
@@ -135,7 +187,7 @@ jobs:
                   i += 1
               return trades
 
-          print("بدء الباك تيست - حدود RSI (55-75) وADX (25-45)")
+          print("بدء الباك تيست - النموذج المدمج (قوة الشمعة + تقوية الترند + فيبوناتشي)")
           all_results = {}
           for pair in PAIRS:
               df = fetch_history(pair)
@@ -155,7 +207,7 @@ jobs:
           total_trades = sum(v["total"] for v in all_results.values())
           total_wins = sum(v["wins"] for v in all_results.values())
           overall_winrate = round((total_wins / total_trades) * 100, 1) if total_trades else 0
-          print("===== الإجمالي (حدود RSI/ADX) =====")
+          print("===== الإجمالي (النموذج المدمج) =====")
           print(f"إجمالي الصفقات: {total_trades} | نسبة النجاح الكلية: {overall_winrate}%")
-          print("للمقارنة: بدون حدود عليا كانت 32.5%")
+          print("للمقارنة: الأساس بدون أي إضافات كان 32.5%")
           EOF
