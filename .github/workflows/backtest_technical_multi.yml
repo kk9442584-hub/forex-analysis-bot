@@ -1,4 +1,4 @@
-name: Backtest Breakout Confirmation
+name: Backtest RSI ADX Range
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     steps:
-      - name: Run backtest with breakout confirmation
+      - name: Run backtest with RSI/ADX upper bounds
         env:
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
         run: |
@@ -71,31 +71,26 @@ jobs:
               dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
               adx = dx.rolling(14).mean().iloc[-1]
               price = close.iloc[-1]
-              prev_close = close.iloc[-2]
-
-              support_prev, resistance_prev = find_nearest_levels(df.iloc[:-2])
-
-              bullish_breakout = (price > resistance_prev) and (prev_close > resistance_prev)
-              bearish_breakout = (price < support_prev) and (prev_close < support_prev)
-
               support, resistance = find_nearest_levels(df)
-
+              support_prev, resistance_prev = find_nearest_levels(df.iloc[:-1])
+              bullish_breakout = price > resistance_prev
+              bearish_breakout = price < support_prev
               return {
                   "price": price, "atr": atr, "rsi": rsi, "adx": adx,
-                  "support": support, "resistance": resistance,
                   "bullish_breakout": bool(bullish_breakout),
                   "bearish_breakout": bool(bearish_breakout),
                   "trend_up": ema50 > ema200,
                   "trend_down": ema50 < ema200,
-                  "adx_ok": adx > 25,
               }
 
           def passes_conditions(ind):
-              if not ind["adx_ok"]:
+              rsi = ind["rsi"]; adx = ind["adx"]
+              adx_ok = 25 < adx <= 45
+              if not adx_ok:
                   return None
-              if ind["trend_up"] and ind["bullish_breakout"] and ind["rsi"] > 55:
+              if ind["trend_up"] and ind["bullish_breakout"] and 55 < rsi <= 75:
                   return "صاعد"
-              if ind["trend_down"] and ind["bearish_breakout"] and ind["rsi"] < 45:
+              if ind["trend_down"] and ind["bearish_breakout"] and 25 <= rsi < 45:
                   return "هابط"
               return None
 
@@ -140,7 +135,7 @@ jobs:
                   i += 1
               return trades
 
-          print("بدء الباك تيست - تأكيد استمرارية الاختراق (شمعتين متتاليتين)")
+          print("بدء الباك تيست - حدود RSI (55-75) وADX (25-45)")
           all_results = {}
           for pair in PAIRS:
               df = fetch_history(pair)
@@ -160,7 +155,7 @@ jobs:
           total_trades = sum(v["total"] for v in all_results.values())
           total_wins = sum(v["wins"] for v in all_results.values())
           overall_winrate = round((total_wins / total_trades) * 100, 1) if total_trades else 0
-          print("===== الإجمالي (تأكيد استمرارية الاختراق) =====")
+          print("===== الإجمالي (حدود RSI/ADX) =====")
           print(f"إجمالي الصفقات: {total_trades} | نسبة النجاح الكلية: {overall_winrate}%")
-          print("للمقارنة: بدون تأكيد كانت 32.5%")
+          print("للمقارنة: بدون حدود عليا كانت 32.5%")
           EOF
