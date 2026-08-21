@@ -344,7 +344,8 @@ def open_trade(pair, direction, ind):
                 else:
                     break
             elif "minvalue" in r.text:
-                safe_stop = round(ind["price"] * 0.005 * 10000, 1)
+                safety_factor = 0.005 * (attempt + 2)
+                safe_stop = round(ind["price"] * safety_factor * 10000, 1)
                 safe_profit = round(safe_stop * RR_RATIO, 1)
                 print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أكبر ({safe_stop} نقطة) - محاولة {attempt+2}")
                 r = send_order(safe_stop, safe_profit)
