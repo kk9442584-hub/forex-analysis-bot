@@ -328,24 +328,32 @@ def open_trade(pair, direction, ind):
 
     if r.status_code != 200:
         import re
-        if "maxvalue" in r.text:
-            match = re.search(r'maxvalue["\']?:?\s*([0-9]+\.?[0-9]*)', r.text)
-            if match and float(match.group(1)) > 0:
-                max_allowed = float(match.group(1))
-                new_stop = round(max_allowed * 0.9, 1)
-                new_profit = round(new_stop * RR_RATIO, 1)
-                print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أصغر ({new_stop} نقطة)")
-                r2 = send_order(new_stop, new_profit)
-                print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r2.status_code}")
-                print(r2.text)
-        elif "minvalue" in r.text:
-            # الرقم المعلن من الخادم غير موثوق أحياناً (يظهر 0)، فنستخدم نسبة آمنة من السعر
-            safe_stop = round(ind["price"] * 0.005 * 10000, 1)
-            safe_profit = round(safe_stop * RR_RATIO, 1)
-            print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أكبر ({safe_stop} نقطة)")
-            r2 = send_order(safe_stop, safe_profit)
-            print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r2.status_code}")
-            print(r2.text)
+        for attempt in range(2):
+            if "maxvalue" in r.text:
+                match = re.search(r'maxvalue["\']?:?\s*([0-9]+\.?[0-9]*)', r.text)
+                if match and float(match.group(1)) > 0:
+                    max_allowed = float(match.group(1))
+                    new_stop = round(max_allowed * 0.6, 1)
+                    new_profit = round(new_stop * RR_RATIO, 1)
+                    print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أصغر ({new_stop} نقطة) - محاولة {attempt+2}")
+                    r = send_order(new_stop, new_profit)
+                    print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r.status_code}")
+                    print(r.text)
+                    if r.status_code == 200:
+                        break
+                else:
+                    break
+            elif "minvalue" in r.text:
+                safe_stop = round(ind["price"] * 0.005 * 10000, 1)
+                safe_profit = round(safe_stop * RR_RATIO, 1)
+                print(f"⚠️ إعادة محاولة {pair} بمسافة ستوب أكبر ({safe_stop} نقطة) - محاولة {attempt+2}")
+                r = send_order(safe_stop, safe_profit)
+                print(f"إعادة المحاولة {pair} ({deal_direction}) - status: {r.status_code}")
+                print(r.text)
+                if r.status_code == 200:
+                    break
+            else:
+                break
 
 def main():
     now = datetime.now(timezone.utc)
