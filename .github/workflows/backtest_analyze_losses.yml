@@ -1,4 +1,4 @@
-name: Wave Strategy V2
+name: Trend Following Strategy
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     steps:
-      - name: Wave strategy backtest V2
+      - name: Trend following backtest
         env:
           TWELVE_DATA_KEY: ${{ secrets.TWELVE_DATA_KEY }}
         run: |
@@ -20,20 +20,18 @@ jobs:
           TWELVE_DATA_KEY = os.environ["TWELVE_DATA_KEY"]
           PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD"]
           
-          # ✅ فلاتر أخف
-          MIN_WAVE_SIZE_ATR = 0.8
-          WAVE_LOOKBACK = 30
-          MIN_WAVE_DURATION = 5
-          FIBO_TARGET = 0.5
+          # إعدادات
+          EMA_FAST = 20
+          EMA_SLOW = 50
+          RSI_PERIOD = 14
+          ATR_PERIOD = 14
+          SL_MULT = 1.0    # ستوب: 1x ATR
+          TP_MULT = 2.0    # هدف: 2x ATR
+          RISK_REWARD = 2  # R:R = 1:2
 
           def fetch_data(pair, interval, outputsize=1000):
               url = "https://api.twelvedata.com/time_series"
-              params = {
-                  "symbol": pair, 
-                  "interval": interval, 
-                  "outputsize": outputsize, 
-                  "apikey": TWELVE_DATA_KEY
-              }
+              params = {"symbol": pair, "interval": interval, "outputsize": outputsize, "apikey": TWELVE_DATA_KEY}
               r = requests.get(url, params=params, timeout=30)
               data = r.json()
               values = data.get("values")
@@ -45,150 +43,129 @@ jobs:
               df = df.iloc[::-1].reset_index(drop=True)
               return df
 
-          def find_swing_points(df, lookback=3):
-              highs = df["high"].values
-              lows = df["low"].values
-              swing_highs = []
-              swing_lows = []
+          def add_indicators(df):
+              close = df["close"]
+              high = df["high"]
+              low = df["low"]
               
-              for i in range(lookback, len(df) - lookback):
-                  window_high = highs[i-lookback:i+lookback+1]
-                  if highs[i] == max(window_high):
-                      swing_highs.append((i, highs[i]))
-                  
-                  window_low = lows[i-lookback:i+lookback+1]
-                  if lows[i] == min(window_low):
-                      swing_lows.append((i, lows[i]))
+              # EMA
+              df["ema_fast"] = close.ewm(span=EMA_FAST).mean()
+              df["ema_slow"] = close.ewm(span=EMA_SLOW).mean()
               
-              return swing_highs, swing_lows
+              # RSI
+              delta = close.diff()
+              gain = delta.where(delta > 0, 0).rolling(RSI_PERIOD).mean()
+              loss = -delta.where(delta < 0, 0).rolling(RSI_PERIOD).mean()
+              rs = gain / loss
+              df["rsi"] = 100 - (100 / (1 + rs))
+              
+              # ATR
+              tr = pd.concat([
+                  high - low,
+                  (high - close.shift()).abs(),
+                  (low - close.shift()).abs()
+              ], axis=1).max(axis=1)
+              df["atr"] = tr.rolling(ATR_PERIOD).mean()
+              
+              return df
 
-          def detect_wave_h1(df_h1):
-              atr_h1 = (df_h1["high"] - df_h1["low"]).rolling(14).mean().iloc[-1]
-              
-              swing_highs, swing_lows = find_swing_points(df_h1, lookback=3)
-              
-              if len(swing_highs) < 1 or len(swing_lows) < 1:
+          def check_signal(df, i):
+              if i < 60:
                   return None
               
-              last_swing_low = swing_lows[-1]
-              last_swing_high = swing_highs[-1]
+              current = df.iloc[i]
+              prev = df.iloc[i-1]
               
-              if last_swing_low[0] > last_swing_high[0]:
-                  wave_type = "صاعدة"
-                  wave_start_idx, wave_start_price = last_swing_low
-                  wave_end_idx, wave_end_price = last_swing_high
-                  breakout_level = wave_end_price
-                  stop_level = wave_start_price
-              else:
-                  wave_type = "هابطة"
-                  wave_start_idx, wave_start_price = last_swing_high
-                  wave_end_idx, wave_end_price = last_swing_low
-                  breakout_level = wave_end_price
-                  stop_level = wave_start_price
+              # الترند
+              trend_up = current["ema_fast"] > current["ema_slow"]
+              trend_down = current["ema_fast"] < current["ema_slow"]
               
-              wave_size = abs(wave_end_price - wave_start_price)
+              # RSI في منطقة معقولة
+              rsi_ok = 30 < current["rsi"] < 70
               
-              if wave_size < atr_h1 * MIN_WAVE_SIZE_ATR:
+              if not rsi_ok:
                   return None
               
-              wave_duration = wave_end_idx - wave_start_idx
-              if wave_duration < MIN_WAVE_DURATION:
-                  return None
-              
-              return {
-                  "type": wave_type,
-                  "size": wave_size,
-                  "breakout_level": breakout_level,
-                  "stop_level": stop_level,
-                  "target": breakout_level + (wave_size * FIBO_TARGET) if wave_type == "صاعدة" else breakout_level - (wave_size * FIBO_TARGET),
-              }
-
-          def check_breakout_m15(df_m15, wave):
-              if wave is None:
-                  return None
-              
-              last_candle = df_m15.iloc[-1]
-              prev_candle = df_m15.iloc[-2]
-              
-              if wave["type"] == "صاعدة":
-                  if last_candle["close"] > wave["breakout_level"] and prev_candle["close"] <= wave["breakout_level"]:
+              # إشارة شراء: ارتداد لـ EMA_fast في ترند صاعد
+              if trend_up:
+                  # السعر لمس أو كسر EMA_fast ثم رجع فوقها
+                  if prev["low"] <= prev["ema_fast"] and current["close"] > current["ema_fast"]:
                       return "صاعد"
-              else:
-                  if last_candle["close"] < wave["breakout_level"] and prev_candle["close"] >= wave["breakout_level"]:
+              
+              # إشارة بيع: ارتداد لـ EMA_fast في ترند هابط
+              if trend_down:
+                  if prev["high"] >= prev["ema_fast"] and current["close"] < current["ema_fast"]:
                       return "هابط"
               
               return None
 
-          def backtest_wave_strategy(df_h1, df_m15):
+          def backtest(df):
               trades = []
               in_trade = False
               current_trade = None
               
-              # ✅ محاذاة أسهل: نخلي M15 نستخدم شموعه الخاصة
-              step = 4  # كل 4 شموع M15 = شمعة H1 واحدة
-              
-              for i in range(50, len(df_m15) - 1, step):
+              for i in range(60, len(df) - 1):
                   if not in_trade:
-                      # نشوف آخر 30 شمعة M15 لتحديد الموجة
-                      df_m15_window = df_m15.iloc[max(0, i-120):i+1]
-                      wave = detect_wave_h1(df_m15_window)
-                      
-                      if wave is None:
-                          continue
-                      
-                      df_m15_check = df_m15.iloc[:i+1]
-                      direction = check_breakout_m15(df_m15_check, wave)
-                      
-                      if direction:
-                          entry_price = wave["breakout_level"]
+                      signal = check_signal(df, i)
+                      if signal:
+                          entry = df.iloc[i+1]["open"]
+                          atr = df.iloc[i]["atr"]
+                          if signal == "صاعد":
+                              stop = entry - (atr * SL_MULT)
+                              target = entry + (atr * SL_MULT * RISK_REWARD)
+                          else:
+                              stop = entry + (atr * SL_MULT)
+                              target = entry - (atr * SL_MULT * RISK_REWARD)
+                          
                           in_trade = True
-                          current_trade = {
-                              "entry": entry_price,
-                              "stop": wave["stop_level"],
-                              "target": wave["target"],
-                              "direction": direction,
-                          }
+                          current_trade = {"entry": entry, "stop": stop, "target": target, "direction": signal}
                   else:
-                      candle = df_m15.iloc[i]
+                      candle = df.iloc[i+1]
                       
                       if current_trade["direction"] == "صاعد":
                           if candle["low"] <= current_trade["stop"]:
-                              trades.append({"result": "خسارة"})
+                              trades.append("خسارة")
                               in_trade = False
                           elif candle["high"] >= current_trade["target"]:
-                              trades.append({"result": "ربح"})
+                              trades.append("ربح")
                               in_trade = False
                       else:
                           if candle["high"] >= current_trade["stop"]:
-                              trades.append({"result": "خسارة"})
+                              trades.append("خسارة")
                               in_trade = False
                           elif candle["low"] <= current_trade["target"]:
-                              trades.append({"result": "ربح"})
+                              trades.append("ربح")
                               in_trade = False
               
               return trades
 
           print("=" * 70)
-          print("🌊 باك تست استراتيجية الموجات V2 (فلاتر أخف)")
-          print(f"الأزواج: {len(PAIRS)} | فيبو: {FIBO_TARGET*100}% | حجم موج أدنى: {MIN_WAVE_SIZE_ATR}x ATR")
+          print("📈 باك تست استراتيجية متابعة الترند (Trend Following)")
+          print(f"EMA: {EMA_FAST}/{EMA_SLOW} | SL: {SL_MULT}x ATR | TP: {RISK_REWARD}x SL | R:R = 1:{RISK_REWARD}")
           print("=" * 70)
           
           all_results = {}
           for pair in PAIRS:
               print(f"\n⏳ جاري تحليل {pair}...")
-              df_m15 = fetch_data(pair, "15min", 2000)
-              
-              if df_m15 is None or len(df_m15) < 500:
+              df = fetch_data(pair, "15min", 2000)
+              if df is None or len(df) < 200:
                   print(f"❌ {pair}: بيانات غير كافية")
                   continue
               
-              trades = backtest_wave_strategy(df_m15, df_m15)
-              wins = sum(1 for t in trades if t["result"] == "ربح")
-              losses = sum(1 for t in trades if t["result"] == "خسارة")
+              df = add_indicators(df)
+              trades = backtest(df)
+              wins = trades.count("ربح")
+              losses = trades.count("خسارة")
               total = len(trades)
               winrate = round((wins / total) * 100, 1) if total else 0
-              print(f"📊 {pair}: {total} صفقة | ربح: {wins} | خسارة: {losses} | Win Rate: {winrate}%")
-              all_results[pair] = {"total": total, "wins": wins, "losses": losses}
+              
+              # حساب الربح الصافي (R:R = 1:2)
+              net_profit_r = (wins * RISK_REWARD) - losses
+              total_r = wins * RISK_REWARD + losses
+              profit_pct = round((net_profit_r / total_r) * 100, 1) if total_r else 0
+              
+              print(f"📊 {pair}: {total} صفقة | ربح: {wins} | خسارة: {losses} | WR: {winrate}% | ربح: {profit_pct}%")
+              all_results[pair] = {"total": total, "wins": wins, "losses": losses, "profit_pct": profit_pct}
               time.sleep(8)
 
           total_trades = sum(v["total"] for v in all_results.values())
@@ -196,24 +173,23 @@ jobs:
           total_losses = sum(v["losses"] for v in all_results.values())
           overall_winrate = round((total_wins / total_trades) * 100, 1) if total_trades else 0
           
+          net_profit_r = (total_wins * RISK_REWARD) - total_losses
+          total_r = total_wins * RISK_REWARD + total_losses
+          overall_profit_pct = round((net_profit_r / total_r) * 100, 1) if total_r else 0
+          
           print()
           print("=" * 70)
           print("📈 الإجمالي")
           print("=" * 70)
-          print(f"إجمالي الصفقات: {total_trades}")
-          print(f"الرابحة: {total_wins} | الخاسرة: {total_losses}")
-          print(f"✅ Win Rate: {overall_winrate}%")
+          print(f"إجمالي: {total_trades} | ربح: {total_wins} | خسارة: {total_losses}")
+          print(f"Win Rate: {overall_winrate}% | الربح الصافي: {overall_profit_pct}%")
           print()
-          print("📋 للمقارنة:")
-          print("  - القديم: 31.5%")
-          print("  - الوسط + MACD: 35.4%")
-          print(f"  - 🆕 الموجات V2: {overall_winrate}%")
+          print("📋 المقارنة:")
+          print("  - القديم: 31.5% (R:R 1:2 → -6.5%)")
+          print("  - الوسط: 35.4% (R:R 1:2 → -1.4%)")
+          print(f"  - 🆕 المتابعة: {overall_winrate}% (R:R 1:{RISK_REWARD} → {overall_profit_pct}%)")
           
-          if overall_winrate >= 50:
-              print(f"🎉 وصلنا لـ 50%+ !")
-          elif overall_winrate > 35.4:
-              print(f"📈 تحسن عن الوسط: +{round(overall_winrate - 35.4, 1)} نقطة")
-          else:
-              print(f"😔 لسا أقل من المتوقع")
+          if overall_profit_pct > 0:
+              print(f"🎉 ربح! الهدف تحقق!")
           print("=" * 70)
           EOF
